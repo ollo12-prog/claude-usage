@@ -292,6 +292,13 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn('id="session-cache-filter"', HTML_TEMPLATE)
         self.assertIn("function applySessionFilters(", HTML_TEMPLATE)
 
+    def test_template_has_editable_pricing(self):
+        self.assertIn('id="pricing-body"', HTML_TEMPLATE)
+        self.assertIn("PRICING_STORAGE_KEY", HTML_TEMPLATE)
+        self.assertIn("function renderPricingEditor(", HTML_TEMPLATE)
+        self.assertIn("function onPricingChange(", HTML_TEMPLATE)
+        self.assertIn("function resetPricing(", HTML_TEMPLATE)
+
     def test_hourly_filter_uses_range_bounds(self):
         """Hourly filter should use the same date bounds as the rest of the UI."""
         self.assertNotIn("cutoff", HTML_TEMPLATE)

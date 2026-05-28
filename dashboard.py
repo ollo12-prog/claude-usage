@@ -351,6 +351,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .filter-field input:focus, .filter-field select:focus { outline: none; border-color: var(--accent); }
   .filter-check { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding-bottom: 7px; white-space: nowrap; }
   .filter-check input { accent-color: var(--accent); }
+  .pricing-input { width: 86px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 5px 7px; font: inherit; font-size: 12px; font-family: monospace; }
+  .pricing-input:focus { outline: none; border-color: var(--accent); }
+  .pricing-source { color: var(--muted); font-size: 11px; }
   .detail-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
   .detail-stat { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .detail-stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
@@ -458,6 +461,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th>Cache Share</th>
       </tr></thead>
       <tbody id="cost-breakdown-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-header">
+      <div class="section-title">Token Pricing ($ / MTok)</div>
+      <button class="export-btn" onclick="resetPricing()" title="Restore built-in dashboard pricing">Reset</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Model</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Source</th>
+      </tr></thead>
+      <tbody id="pricing-body"></tbody>
     </table>
   </div>
   <div class="table-card">
@@ -617,7 +637,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Custom price edits are saved in this browser only. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -697,8 +717,9 @@ function tzDisplayName(tzMode) {
   }
 }
 
-// ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
-const PRICING = {
+// ── Pricing (Anthropic API, April 2026 defaults; editable locally) ─────────
+const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
+const DEFAULT_PRICING = {
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
@@ -709,6 +730,80 @@ const PRICING = {
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
 };
+let PRICING = JSON.parse(JSON.stringify(DEFAULT_PRICING));
+let pricingOverrides = {};
+
+function loadPricing() {
+  try {
+    pricingOverrides = JSON.parse(localStorage.getItem(PRICING_STORAGE_KEY) || '{}') || {};
+  } catch(e) {
+    pricingOverrides = {};
+  }
+  PRICING = JSON.parse(JSON.stringify(DEFAULT_PRICING));
+  for (const [model, override] of Object.entries(pricingOverrides)) {
+    if (!PRICING[model]) continue;
+    PRICING[model] = { ...PRICING[model], ...override };
+  }
+}
+
+function savePricing() {
+  localStorage.setItem(PRICING_STORAGE_KEY, JSON.stringify(pricingOverrides));
+}
+
+function renderPricingEditor() {
+  const body = document.getElementById('pricing-body');
+  if (!body) return;
+  body.innerHTML = Object.keys(DEFAULT_PRICING).map(model => {
+    const p = PRICING[model];
+    const overridden = !!pricingOverrides[model];
+    const input = (field) => `<input class="pricing-input" type="number" min="0" step="0.01" value="${p[field].toFixed(2)}" data-model="${esc(model)}" data-field="${field}" onchange="onPricingChange(this)">`;
+    return `<tr>
+      <td><span class="model-tag">${esc(model)}</span></td>
+      <td>${input('input')}</td>
+      <td>${input('output')}</td>
+      <td>${input('cache_read')}</td>
+      <td>${input('cache_write')}</td>
+      <td class="pricing-source">${overridden ? 'Custom' : 'Default'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function onPricingChange(input) {
+  const model = input.dataset.model;
+  const field = input.dataset.field;
+  const value = parseFloat(input.value);
+  if (!DEFAULT_PRICING[model] || !field || !isFinite(value) || value < 0) {
+    input.value = PRICING[model]?.[field]?.toFixed(2) || '0.00';
+    return;
+  }
+  if (!pricingOverrides[model]) pricingOverrides[model] = {};
+  pricingOverrides[model][field] = value;
+  PRICING[model][field] = value;
+
+  const defaults = DEFAULT_PRICING[model];
+  const overrides = pricingOverrides[model];
+  if (Object.keys(overrides).every(k => overrides[k] === defaults[k])) {
+    delete pricingOverrides[model];
+  }
+
+  savePricing();
+  renderPricingEditor();
+  applyFilter();
+  if (selectedSessionDetail && !document.getElementById('session-detail-view').classList.contains('hidden')) {
+    renderSessionDetail(selectedSessionDetail);
+  }
+}
+
+function resetPricing() {
+  pricingOverrides = {};
+  localStorage.removeItem(PRICING_STORAGE_KEY);
+  loadPricing();
+  renderPricingEditor();
+  applyFilter();
+  if (selectedSessionDetail && !document.getElementById('session-detail-view').classList.contains('hidden')) {
+    renderSessionDetail(selectedSessionDetail);
+  }
+}
 
 function isBillable(model) {
   if (!model) return false;
@@ -1840,6 +1935,8 @@ function scheduleAutoRefresh() {
   }
 }
 
+loadPricing();
+renderPricingEditor();
 loadData();
 scheduleAutoRefresh();
 </script>
