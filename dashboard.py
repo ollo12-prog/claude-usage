@@ -355,17 +355,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .detail-stat { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .detail-stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
   .detail-stat .value { font-size: 15px; font-weight: 700; }
-  .side-panel-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity 0.18s; z-index: 20; }
-  .side-panel-backdrop.open { opacity: 1; pointer-events: auto; }
-  .side-panel { position: fixed; top: 0; right: 0; width: min(920px, 92vw); height: 100vh; background: var(--card); border-left: 1px solid var(--border); box-shadow: -18px 0 40px rgba(0,0,0,0.35); transform: translateX(100%); transition: transform 0.2s ease; z-index: 21; display: flex; flex-direction: column; }
-  .side-panel.open { transform: translateX(0); }
-  .side-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
-  .side-panel-header .section-title { margin-bottom: 0; }
-  .panel-actions { display: flex; align-items: center; gap: 8px; }
-  .panel-close { width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
-  .panel-close:hover { color: var(--text); border-color: var(--accent); }
-  .side-panel-body { padding: 18px; overflow-y: auto; }
-  .timeline-wrap { position: relative; height: 220px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .detail-workspace-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
+  .detail-title-group { min-width: 0; }
+  .detail-title { color: var(--accent); font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .detail-subtitle { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .detail-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .timeline-wrap { position: relative; height: 300px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .hidden { display: none; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
 
@@ -405,7 +400,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div class="container">
+<main class="container" id="dashboard-view">
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
@@ -563,20 +558,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
   </div>
-</div>
+</main>
 
-<div class="side-panel-backdrop" id="session-detail-backdrop" onclick="closeSessionDetail()"></div>
-<aside class="side-panel" id="session-detail-panel" aria-label="Session drilldown">
-  <div class="side-panel-header">
-    <div class="section-title" id="session-detail-title">Session Drilldown</div>
-    <div class="panel-actions">
+<main class="container hidden" id="session-detail-view">
+  <div class="detail-workspace-header">
+    <div class="detail-title-group">
+      <div class="detail-title" id="session-detail-title">Session Drilldown</div>
+      <div class="detail-subtitle" id="session-detail-subtitle"></div>
+    </div>
+    <div class="detail-actions">
+      <button class="export-btn" onclick="closeSessionDetail()" title="Return to dashboard">&larr; Back</button>
       <button class="export-btn" onclick="exportSessionTurnsCSV()" title="Export selected session turns to CSV">&#x2913; CSV</button>
-      <button class="panel-close" onclick="closeSessionDetail()" title="Close">&times;</button>
     </div>
   </div>
-  <div class="side-panel-body">
-    <div class="detail-stats" id="session-detail-stats"></div>
+  <div class="detail-stats" id="session-detail-stats"></div>
+  <div class="table-card">
+    <div class="section-title">Session Timeline</div>
     <div class="timeline-wrap"><canvas id="chart-session-timeline"></canvas></div>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Turns</div>
     <table>
       <thead><tr>
         <th>Time</th>
@@ -596,7 +597,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <tbody id="session-detail-body"></tbody>
     </table>
   </div>
-</aside>
+</main>
 
 <footer>
   <div class="footer-content">
@@ -933,6 +934,16 @@ function updateURL() {
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
+}
+
+function updateURLForSession(sessionId) {
+  const params = new URLSearchParams(window.location.search);
+  params.set('session', sessionId);
+  history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+}
+
+function readURLSession() {
+  return new URLSearchParams(window.location.search).get('session') || '';
 }
 
 // ── Session sort ───────────────────────────────────────────────────────────
@@ -1401,9 +1412,11 @@ function renderSessionDetail(d) {
   const c = calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
   const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
   const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
-  document.getElementById('session-detail-panel').classList.add('open');
-  document.getElementById('session-detail-backdrop').classList.add('open');
+  document.getElementById('dashboard-view').classList.add('hidden');
+  document.getElementById('filter-bar').classList.add('hidden');
+  document.getElementById('session-detail-view').classList.remove('hidden');
   document.getElementById('session-detail-title').textContent = 'Session Drilldown — ' + s.display_id + '…';
+  document.getElementById('session-detail-subtitle').textContent = s.session_id + ' · ' + s.project;
   document.getElementById('session-detail-stats').innerHTML = [
     ['Project', s.project],
     ['Model', s.model],
@@ -1433,6 +1446,7 @@ function renderSessionDetail(d) {
     </tr>`;
   }).join('');
   renderSessionTimeline(d.turns);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function renderSessionTimeline(turns) {
@@ -1487,8 +1501,14 @@ function renderSessionTimeline(turns) {
 }
 
 function closeSessionDetail() {
-  document.getElementById('session-detail-panel').classList.remove('open');
-  document.getElementById('session-detail-backdrop').classList.remove('open');
+  document.getElementById('session-detail-view').classList.add('hidden');
+  document.getElementById('dashboard-view').classList.remove('hidden');
+  document.getElementById('filter-bar').classList.remove('hidden');
+  const params = new URLSearchParams(window.location.search);
+  params.delete('session');
+  const search = params.toString() ? '?' + params.toString() : '';
+  history.replaceState(null, '', window.location.pathname + search);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 async function openSessionDetail(sessionId) {
@@ -1497,6 +1517,7 @@ async function openSessionDetail(sessionId) {
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
     renderSessionDetail(d);
+    updateURLForSession(sessionId);
   } catch(e) {
     console.error(e);
   }
@@ -1756,6 +1777,10 @@ async function loadData() {
     }
 
     applyFilter();
+    if (isFirstLoad) {
+      const sessionId = readURLSession();
+      if (sessionId) openSessionDetail(sessionId);
+    }
   } catch(e) {
     console.error(e);
   }
