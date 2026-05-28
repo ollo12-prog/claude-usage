@@ -275,12 +275,14 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_template_has_drilldown_and_metric_tables(self):
         self.assertIn('id="session-detail-view"', HTML_TEMPLATE)
         self.assertIn('id="chart-session-timeline"', HTML_TEMPLATE)
+        self.assertIn('id="session-tool-breakdown-body"', HTML_TEMPLATE)
         self.assertIn('id="cost-breakdown-body"', HTML_TEMPLATE)
         self.assertIn('id="tool-cost-body"', HTML_TEMPLATE)
         self.assertIn('id="session-signals-body"', HTML_TEMPLATE)
         self.assertIn("function openSessionDetail(", HTML_TEMPLATE)
         self.assertIn("function closeSessionDetail(", HTML_TEMPLATE)
         self.assertIn("function updateURLForSession(", HTML_TEMPLATE)
+        self.assertIn("function renderSessionToolBreakdown(", HTML_TEMPLATE)
 
     def test_template_has_session_filters(self):
         self.assertIn('id="session-project-filter"', HTML_TEMPLATE)

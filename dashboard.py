@@ -573,6 +573,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="detail-stats" id="session-detail-stats"></div>
   <div class="table-card">
+    <div class="section-title">Tool Breakdown</div>
+    <table>
+      <thead><tr>
+        <th>Tool</th>
+        <th>Turns</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Est. Cost</th>
+        <th>Cost Share</th>
+      </tr></thead>
+      <tbody id="session-tool-breakdown-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
     <div class="section-title">Session Timeline</div>
     <div class="timeline-wrap"><canvas id="chart-session-timeline"></canvas></div>
   </div>
@@ -1445,8 +1461,38 @@ function renderSessionDetail(d) {
       <td class="cost">${fmtCost(cost)}</td>
     </tr>`;
   }).join('');
+  renderSessionToolBreakdown(d.turns);
   renderSessionTimeline(d.turns);
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderSessionToolBreakdown(turns) {
+  const byTool = {};
+  for (const t of turns) {
+    const tool = t.tool || '<none>';
+    if (!byTool[tool]) byTool[tool] = { tool, turns: 0, input: 0, output: 0, cache_read: 0, cache_creation: 0, cost: 0 };
+    const row = byTool[tool];
+    row.turns++;
+    row.input += t.input || 0;
+    row.output += t.output || 0;
+    row.cache_read += t.cache_read || 0;
+    row.cache_creation += t.cache_creation || 0;
+    row.cost += calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+  }
+  const rows = Object.values(byTool).sort((a, b) => b.cost - a.cost);
+  const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
+  document.getElementById('session-tool-breakdown-body').innerHTML = rows.map(r => {
+    return `<tr>
+      <td>${esc(r.tool)}</td>
+      <td class="num">${fmt(r.turns)}</td>
+      <td class="num">${fmt(r.input)}</td>
+      <td class="num">${fmt(r.output)}</td>
+      <td class="num">${fmt(r.cache_read)}</td>
+      <td class="num">${fmt(r.cache_creation)}</td>
+      <td class="cost">${fmtCost(r.cost)}</td>
+      <td class="num">${fmtPct(totalCost ? r.cost / totalCost : 0)}</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderSessionTimeline(turns) {
