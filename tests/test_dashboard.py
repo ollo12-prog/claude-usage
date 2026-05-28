@@ -75,6 +75,8 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertEqual(session["project"], "user/myproject")
         self.assertEqual(session["model"], "claude-sonnet-4-6")
         self.assertEqual(session["input"], 5000)
+        self.assertEqual(session["cache_read"], 500)
+        self.assertEqual(session["cache_creation"], 200)
 
     def test_daily_by_model_populated(self):
         data = get_dashboard_data(db_path=self.db_path)
@@ -227,6 +229,13 @@ class TestHTMLTemplate(unittest.TestCase):
         """Peak-hour set covers UTC 12–17 (Mon–Fri 05:00–11:00 PT)."""
         self.assertIn('PEAK_HOURS_UTC', HTML_TEMPLATE)
         self.assertIn('[12, 13, 14, 15, 16, 17]', HTML_TEMPLATE)
+
+    def test_recent_sessions_shows_cache_tokens(self):
+        """Recent sessions table exposes session-level cache token usage."""
+        self.assertIn("setSessionSort('cache_read')", HTML_TEMPLATE)
+        self.assertIn("setSessionSort('cache_creation')", HTML_TEMPLATE)
+        self.assertIn("${fmt(s.cache_read)}", HTML_TEMPLATE)
+        self.assertIn("${fmt(s.cache_creation)}", HTML_TEMPLATE)
 
     def test_hourly_filter_uses_range_bounds(self):
         """Hourly filter should use the same date bounds as the rest of the UI."""
