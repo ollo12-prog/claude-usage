@@ -41,7 +41,10 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
                            cache_read=10, cache_creation=5,
                            timestamp="2026-04-08T10:00:00Z",
                            cwd="/home/user/project",
-                           message_id=""):
+                           message_id="", duration_ms=0, stop_reason="",
+                           service_tier="", inference_geo="",
+                           cache_creation_5m=0, cache_creation_1h=0,
+                           is_sidechain=False, is_compact_summary=False):
     msg = {
         "model": model,
         "usage": {
@@ -49,7 +52,14 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
             "output_tokens": output_tokens,
             "cache_read_input_tokens": cache_read,
             "cache_creation_input_tokens": cache_creation,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": cache_creation_5m,
+                "ephemeral_1h_input_tokens": cache_creation_1h,
+            },
+            "service_tier": service_tier,
+            "inference_geo": inference_geo,
         },
+        "stop_reason": stop_reason,
         "content": [],
     }
     if message_id:
@@ -59,6 +69,10 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
         "sessionId": session_id,
         "timestamp": timestamp,
         "cwd": cwd,
+        "durationMs": duration_ms,
+        "stopReason": stop_reason,
+        "isSidechain": is_sidechain,
+        "isCompactSummary": is_compact_summary,
         "message": msg,
     })
 
@@ -163,6 +177,29 @@ class TestParseJsonlFile(unittest.TestCase):
         path = self._write_jsonl("test.jsonl", [record])
         _, turns, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["tool_name"], "Read")
+
+    def test_extended_turn_metadata_extracted(self):
+        path = self._write_jsonl("test.jsonl", [
+            _make_assistant_record(
+                duration_ms=1234,
+                stop_reason="tool_use",
+                service_tier="standard",
+                inference_geo="not_available",
+                cache_creation_5m=7,
+                cache_creation_1h=11,
+                is_sidechain=True,
+                is_compact_summary=True,
+            )
+        ])
+        _, turns, _ = parse_jsonl_file(path)
+        self.assertEqual(turns[0]["cache_creation_5m_tokens"], 7)
+        self.assertEqual(turns[0]["cache_creation_1h_tokens"], 11)
+        self.assertEqual(turns[0]["duration_ms"], 1234)
+        self.assertEqual(turns[0]["stop_reason"], "tool_use")
+        self.assertEqual(turns[0]["service_tier"], "standard")
+        self.assertEqual(turns[0]["inference_geo"], "not_available")
+        self.assertEqual(turns[0]["is_sidechain"], 1)
+        self.assertEqual(turns[0]["is_compact_summary"], 1)
 
 
 class TestMessageIdDedup(unittest.TestCase):
@@ -295,8 +332,8 @@ class TestMessageIdDedupIntegration(unittest.TestCase):
         # Should still be 1 turn (UNIQUE index prevents duplicate)
         self.assertEqual(count2, 1)
 
-    def test_schema_migration_adds_message_id(self):
-        """Existing DBs without message_id column should be upgraded."""
+    def test_schema_migration_adds_turn_metadata_columns(self):
+        """Existing DBs without newer turn columns should be upgraded."""
         conn = sqlite3.connect(self.db_path)
         conn.executescript("""
             CREATE TABLE turns (
@@ -315,14 +352,19 @@ class TestMessageIdDedupIntegration(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # init_db should add message_id column
+        # init_db should add newer turn metadata columns
         from scanner import get_db, init_db
         conn = get_db(self.db_path)
         init_db(conn)
         # Verify column exists
         row = conn.execute("PRAGMA table_info(turns)").fetchall()
         col_names = [r["name"] for r in row]
-        self.assertIn("message_id", col_names)
+        for col in [
+            "message_id", "cache_creation_5m_tokens", "cache_creation_1h_tokens",
+            "duration_ms", "stop_reason", "service_tier", "inference_geo",
+            "is_sidechain", "is_compact_summary",
+        ]:
+            self.assertIn(col, col_names)
         conn.close()
 
 

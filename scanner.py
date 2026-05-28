@@ -63,9 +63,17 @@ def init_db(conn):
             output_tokens           INTEGER DEFAULT 0,
             cache_read_tokens       INTEGER DEFAULT 0,
             cache_creation_tokens   INTEGER DEFAULT 0,
+            cache_creation_5m_tokens INTEGER DEFAULT 0,
+            cache_creation_1h_tokens INTEGER DEFAULT 0,
             tool_name               TEXT,
             cwd                     TEXT,
-            message_id              TEXT
+            message_id              TEXT,
+            duration_ms             INTEGER DEFAULT 0,
+            stop_reason             TEXT,
+            service_tier            TEXT,
+            inference_geo           TEXT,
+            is_sidechain            INTEGER DEFAULT 0,
+            is_compact_summary      INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS processed_files (
@@ -78,11 +86,24 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);
     """)
-    # Add message_id column if upgrading from older schema
-    try:
-        conn.execute("SELECT message_id FROM turns LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Add columns if upgrading from older schema.
+    existing_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
+    }
+    migrations = {
+        "message_id": "TEXT",
+        "cache_creation_5m_tokens": "INTEGER DEFAULT 0",
+        "cache_creation_1h_tokens": "INTEGER DEFAULT 0",
+        "duration_ms": "INTEGER DEFAULT 0",
+        "stop_reason": "TEXT",
+        "service_tier": "TEXT",
+        "inference_geo": "TEXT",
+        "is_sidechain": "INTEGER DEFAULT 0",
+        "is_compact_summary": "INTEGER DEFAULT 0",
+    }
+    for col, spec in migrations.items():
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {spec}")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
@@ -166,6 +187,11 @@ def parse_jsonl_file(filepath):
                     output_tokens = usage.get("output_tokens", 0) or 0
                     cache_read = usage.get("cache_read_input_tokens", 0) or 0
                     cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                    cache_creation_detail = usage.get("cache_creation", {})
+                    if not isinstance(cache_creation_detail, dict):
+                        cache_creation_detail = {}
+                    cache_creation_5m = cache_creation_detail.get("ephemeral_5m_input_tokens", 0) or 0
+                    cache_creation_1h = cache_creation_detail.get("ephemeral_1h_input_tokens", 0) or 0
 
                     # Only record turns that have actual token usage
                     if input_tokens + output_tokens + cache_read + cache_creation == 0:
@@ -189,9 +215,17 @@ def parse_jsonl_file(filepath):
                         "output_tokens": output_tokens,
                         "cache_read_tokens": cache_read,
                         "cache_creation_tokens": cache_creation,
+                        "cache_creation_5m_tokens": cache_creation_5m,
+                        "cache_creation_1h_tokens": cache_creation_1h,
                         "tool_name": tool_name,
                         "cwd": cwd,
                         "message_id": message_id,
+                        "duration_ms": record.get("durationMs", 0) or 0,
+                        "stop_reason": record.get("stopReason") or msg.get("stop_reason") or "",
+                        "service_tier": usage.get("service_tier", "") or "",
+                        "inference_geo": usage.get("inference_geo", "") or "",
+                        "is_sidechain": 1 if record.get("isSidechain") else 0,
+                        "is_compact_summary": 1 if record.get("isCompactSummary") else 0,
                     }
 
                     # Dedup: last record per message_id wins (final usage tallies)
@@ -303,13 +337,20 @@ def insert_turns(conn, turns):
     conn.executemany("""
         INSERT OR IGNORE INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
-             cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read_tokens, cache_creation_tokens,
+             cache_creation_5m_tokens, cache_creation_1h_tokens,
+             tool_name, cwd, message_id, duration_ms, stop_reason,
+             service_tier, inference_geo, is_sidechain, is_compact_summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
          t["cache_read_tokens"], t["cache_creation_tokens"],
-         t["tool_name"], t["cwd"], t.get("message_id", ""))
+         t.get("cache_creation_5m_tokens", 0), t.get("cache_creation_1h_tokens", 0),
+         t["tool_name"], t["cwd"], t.get("message_id", ""),
+         t.get("duration_ms", 0), t.get("stop_reason", ""),
+         t.get("service_tier", ""), t.get("inference_geo", ""),
+         t.get("is_sidechain", 0), t.get("is_compact_summary", 0))
         for t in turns
     ])
 
@@ -430,6 +471,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             output_tokens = usage.get("output_tokens", 0) or 0
                             cache_read = usage.get("cache_read_input_tokens", 0) or 0
                             cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                            cache_creation_detail = usage.get("cache_creation", {})
+                            if not isinstance(cache_creation_detail, dict):
+                                cache_creation_detail = {}
+                            cache_creation_5m = cache_creation_detail.get("ephemeral_5m_input_tokens", 0) or 0
+                            cache_creation_1h = cache_creation_detail.get("ephemeral_1h_input_tokens", 0) or 0
 
                             if input_tokens + output_tokens + cache_read + cache_creation == 0:
                                 continue
@@ -451,9 +497,17 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                 "output_tokens": output_tokens,
                                 "cache_read_tokens": cache_read,
                                 "cache_creation_tokens": cache_creation,
+                                "cache_creation_5m_tokens": cache_creation_5m,
+                                "cache_creation_1h_tokens": cache_creation_1h,
                                 "tool_name": tool_name,
                                 "cwd": cwd,
                                 "message_id": message_id,
+                                "duration_ms": record.get("durationMs", 0) or 0,
+                                "stop_reason": record.get("stopReason") or msg.get("stop_reason") or "",
+                                "service_tier": usage.get("service_tier", "") or "",
+                                "inference_geo": usage.get("inference_geo", "") or "",
+                                "is_sidechain": 1 if record.get("isSidechain") else 0,
+                                "is_compact_summary": 1 if record.get("isCompactSummary") else 0,
                             }
 
                             if message_id:

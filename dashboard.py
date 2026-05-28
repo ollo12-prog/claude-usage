@@ -5,9 +5,10 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
@@ -76,6 +77,33 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":  r["turns"] or 0,
     } for r in hourly_rows]
 
+    # ── Tool usage per-day per-model (client filters by range) ────────────────
+    tool_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)        as day,
+            COALESCE(model, 'unknown')      as model,
+            COALESCE(tool_name, '<none>')   as tool,
+            SUM(input_tokens)               as input,
+            SUM(output_tokens)              as output,
+            SUM(cache_read_tokens)          as cache_read,
+            SUM(cache_creation_tokens)      as cache_creation,
+            COUNT(*)                        as turns
+        FROM turns
+        GROUP BY day, model, tool
+        ORDER BY day, model, tool
+    """).fetchall()
+
+    tool_by_model = [{
+        "day":            r["day"],
+        "model":          r["model"],
+        "tool":           r["tool"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in tool_rows]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
@@ -97,6 +125,7 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = 0
         sessions_all.append({
             "session_id":    r["session_id"][:8],
+            "full_session_id": r["session_id"],
             "project":       r["project_name"] or "unknown",
             "branch":        r["git_branch"] or "",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
@@ -116,9 +145,106 @@ def get_dashboard_data(db_path=DB_PATH):
         "all_models":      all_models,
         "daily_by_model":  daily_by_model,
         "hourly_by_model": hourly_by_model,
+        "tool_by_model":   tool_by_model,
         "sessions_all":    sessions_all,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def get_session_detail(session_id, db_path=DB_PATH):
+    if not db_path.exists():
+        return {"error": "Database not found. Run: python cli.py scan"}
+    if not session_id:
+        return {"error": "Missing session_id"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    session = conn.execute("""
+        SELECT
+            session_id, project_name, first_timestamp, last_timestamp,
+            total_input_tokens, total_output_tokens,
+            total_cache_read, total_cache_creation, model, turn_count,
+            git_branch
+        FROM sessions
+        WHERE session_id = ?
+    """, (session_id,)).fetchone()
+
+    if session is None:
+        conn.close()
+        return {"error": "Session not found"}
+
+    turn_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
+    }
+
+    def turn_expr(col, default):
+        return col if col in turn_cols else f"{default} as {col}"
+
+    turns = conn.execute(f"""
+        SELECT
+            timestamp, COALESCE(model, 'unknown') as model,
+            input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens,
+            {turn_expr('cache_creation_5m_tokens', '0')},
+            {turn_expr('cache_creation_1h_tokens', '0')},
+            {turn_expr('duration_ms', '0')},
+            {turn_expr('stop_reason', "''")},
+            {turn_expr('service_tier', "''")},
+            {turn_expr('inference_geo', "''")},
+            {turn_expr('is_sidechain', '0')},
+            {turn_expr('is_compact_summary', '0')},
+            COALESCE(tool_name, '<none>') as tool_name,
+            cwd
+        FROM turns
+        WHERE session_id = ?
+        ORDER BY timestamp, id
+    """, (session_id,)).fetchall()
+
+    try:
+        t1 = datetime.fromisoformat(session["first_timestamp"].replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat(session["last_timestamp"].replace("Z", "+00:00"))
+        duration_min = round((t2 - t1).total_seconds() / 60, 1)
+    except Exception:
+        duration_min = 0
+
+    result = {
+        "session": {
+            "session_id":       session["session_id"],
+            "display_id":       session["session_id"][:8],
+            "project":          session["project_name"] or "unknown",
+            "branch":           session["git_branch"] or "",
+            "first":            (session["first_timestamp"] or "")[:16].replace("T", " "),
+            "last":             (session["last_timestamp"] or "")[:16].replace("T", " "),
+            "duration_min":     duration_min,
+            "model":            session["model"] or "unknown",
+            "turns":            session["turn_count"] or 0,
+            "input":            session["total_input_tokens"] or 0,
+            "output":           session["total_output_tokens"] or 0,
+            "cache_read":       session["total_cache_read"] or 0,
+            "cache_creation":   session["total_cache_creation"] or 0,
+        },
+        "turns": [{
+            "timestamp":      (r["timestamp"] or "")[:16].replace("T", " "),
+            "model":          r["model"],
+            "input":          r["input_tokens"] or 0,
+            "output":         r["output_tokens"] or 0,
+            "cache_read":     r["cache_read_tokens"] or 0,
+            "cache_creation": r["cache_creation_tokens"] or 0,
+            "cache_creation_5m": r["cache_creation_5m_tokens"] or 0,
+            "cache_creation_1h": r["cache_creation_1h_tokens"] or 0,
+            "duration_ms":    r["duration_ms"] or 0,
+            "stop_reason":    r["stop_reason"] or "",
+            "service_tier":   r["service_tier"] or "",
+            "inference_geo":  r["inference_geo"] or "",
+            "is_sidechain":   bool(r["is_sidechain"]),
+            "is_compact_summary": bool(r["is_compact_summary"]),
+            "tool":           r["tool_name"],
+            "cwd":            r["cwd"] or "",
+        } for r in turns],
+    }
+    conn.close()
+    return result
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -208,6 +334,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .section-header .section-title { margin-bottom: 0; }
   .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
+  .link-btn { background: transparent; border: none; color: var(--blue); cursor: pointer; font: inherit; padding: 0; }
+  .link-btn:hover { text-decoration: underline; }
+  .detail-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .detail-stat { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .detail-stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .detail-stat .value { font-size: 15px; font-weight: 700; }
+  .hidden { display: none; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
@@ -291,6 +424,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </table>
   </div>
   <div class="table-card">
+    <div class="section-title">Cost Breakdown</div>
+    <table>
+      <thead><tr>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Total</th>
+        <th>Est. Cache Savings</th>
+        <th>Cache Share</th>
+      </tr></thead>
+      <tbody id="cost-breakdown-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
     <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
@@ -307,6 +455,61 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card hidden" id="session-detail-card">
+    <div class="section-header">
+      <div class="section-title" id="session-detail-title">Session Drilldown</div>
+      <button class="export-btn" onclick="exportSessionTurnsCSV()" title="Export selected session turns to CSV">&#x2913; CSV</button>
+    </div>
+    <div class="detail-stats" id="session-detail-stats"></div>
+    <table>
+      <thead><tr>
+        <th>Time</th>
+        <th>Tool</th>
+        <th>Model</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Cache 5m</th>
+        <th>Cache 1h</th>
+        <th>Duration</th>
+        <th>Stop</th>
+        <th>Tier</th>
+        <th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="session-detail-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Top Tools by Cost</div>
+    <table>
+      <thead><tr>
+        <th>Tool</th>
+        <th>Turns</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="tool-cost-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Expensive Session Signals</div>
+    <table>
+      <thead><tr>
+        <th>Session</th>
+        <th>Project</th>
+        <th>Cost</th>
+        <th>Cost / Min</th>
+        <th>Tokens / Min</th>
+        <th>Output / Turn</th>
+        <th>Cache Share</th>
+      </tr></thead>
+      <tbody id="session-signals-body"></tbody>
     </table>
   </div>
   <div class="table-card">
@@ -376,6 +579,8 @@ let branchSortDir = 'desc';
 let lastFilteredSessions = [];
 let lastByProject = [];
 let lastByProjectBranch = [];
+let lastByTool = [];
+let selectedSessionDetail = null;
 let sessionSortDir = 'desc';
 let hourlyTZ = 'local';  // 'local' or 'utc'
 
@@ -452,15 +657,20 @@ function getPricing(model) {
 }
 
 function calcCost(model, inp, out, cacheRead, cacheCreation) {
-  if (!isBillable(model)) return 0;
+  return calcCostBreakdown(model, inp, out, cacheRead, cacheCreation).total;
+}
+
+function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation) {
+  const zero = { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0 };
+  if (!isBillable(model)) return zero;
   const p = getPricing(model);
-  if (!p) return 0;
-  return (
-    inp           * p.input       / 1e6 +
-    out           * p.output      / 1e6 +
-    cacheRead     * p.cache_read  / 1e6 +
-    cacheCreation * p.cache_write / 1e6
-  );
+  if (!p) return zero;
+  const input = inp * p.input / 1e6;
+  const output = out * p.output / 1e6;
+  const cache_read = cacheRead * p.cache_read / 1e6;
+  const cache_creation = cacheCreation * p.cache_write / 1e6;
+  const cache_savings = cacheRead * Math.max(p.input - p.cache_read, 0) / 1e6;
+  return { input, output, cache_read, cache_creation, total: input + output + cache_read + cache_creation, cache_savings };
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -472,6 +682,7 @@ function fmt(n) {
 }
 function fmtCost(c)    { return '$' + c.toFixed(4); }
 function fmtCostBig(c) { return '$' + c.toFixed(2); }
+function fmtPct(v)     { return isFinite(v) ? (v * 100).toFixed(1) + '%' : '0.0%'; }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
 const TOKEN_COLORS = {
@@ -653,6 +864,38 @@ function sortSessions(sessions) {
   });
 }
 
+function aggregateCostBreakdown(rows) {
+  return rows.reduce((acc, r) => {
+    const c = calcCostBreakdown(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    acc.input += c.input;
+    acc.output += c.output;
+    acc.cache_read += c.cache_read;
+    acc.cache_creation += c.cache_creation;
+    acc.total += c.total;
+    acc.cache_savings += c.cache_savings;
+    acc.tokens += (r.input || 0) + (r.output || 0) + (r.cache_read || 0) + (r.cache_creation || 0);
+    acc.cache_tokens += (r.cache_read || 0) + (r.cache_creation || 0);
+    return acc;
+  }, { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0, tokens: 0, cache_tokens: 0 });
+}
+
+function sessionSignals(sessions) {
+  return sessions.map(s => {
+    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const minutes = Math.max(parseFloat(s.duration_min) || 0, 1 / 60);
+    const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+    const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+    return {
+      ...s,
+      cost,
+      cost_per_min: cost / minutes,
+      tokens_per_min: tokens / minutes,
+      output_per_turn: s.turns ? (s.output || 0) / s.turns : 0,
+      cache_share: promptTokens ? ((s.cache_read || 0) + (s.cache_creation || 0)) / promptTokens : 0,
+    };
+  }).sort((a, b) => b.cost - a.cost);
+}
+
 // ── Aggregation & filtering ────────────────────────────────────────────────
 function applyFilter() {
   if (!rawData) return;
@@ -741,6 +984,25 @@ function applyFilter() {
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
   };
+  const costTotals = aggregateCostBreakdown(filteredSessions);
+
+  // By tool: aggregate from server-side per-day tool data
+  const toolMap = {};
+  const filteredTools = (rawData.tool_by_model || []).filter(r =>
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
+  );
+  for (const r of filteredTools) {
+    if (!toolMap[r.tool]) toolMap[r.tool] = { tool: r.tool, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, cost: 0 };
+    const t = toolMap[r.tool];
+    t.input          += r.input;
+    t.output         += r.output;
+    t.cache_read     += r.cache_read;
+    t.cache_creation += r.cache_creation;
+    t.turns          += r.turns;
+    t.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+  }
+  const byTool = Object.values(toolMap).sort((a, b) => b.cost - a.cost);
+  const hotSessions = sessionSignals(filteredSessions);
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
@@ -757,11 +1019,15 @@ function applyFilter() {
   renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
+  renderCostBreakdown(costTotals);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByProject = sortProjects(byProject);
   lastByProjectBranch = sortProjectBranch(byProjectBranch);
+  lastByTool = byTool;
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
+  renderToolCostTable(lastByTool.slice(0, 15));
+  renderSessionSignalsTable(hotSessions.slice(0, 15));
   renderProjectCostTable(lastByProject.slice(0, 20));
   renderProjectBranchCostTable(lastByProjectBranch.slice(0, 20));
 }
@@ -785,6 +1051,19 @@ function renderStats(t) {
       ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
   `).join('');
+}
+
+function renderCostBreakdown(c) {
+  const cacheShare = c.tokens ? c.cache_tokens / c.tokens : 0;
+  document.getElementById('cost-breakdown-body').innerHTML = `<tr>
+    <td class="cost">${fmtCost(c.input)}</td>
+    <td class="cost">${fmtCost(c.output)}</td>
+    <td class="cost">${fmtCost(c.cache_read)}</td>
+    <td class="cost">${fmtCost(c.cache_creation)}</td>
+    <td class="cost">${fmtCostBig(c.total)}</td>
+    <td class="cost">${fmtCostBig(c.cache_savings)}</td>
+    <td class="num">${fmtPct(cacheShare)}</td>
+  </tr>`;
 }
 
 // Bucket rows into 24 hours (display-TZ), summing turns + output, and count
@@ -963,7 +1242,7 @@ function renderSessionsTable(sessions) {
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
     return `<tr>
-      <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
+      <td class="muted" style="font-family:monospace"><button class="link-btn" data-session="${esc(s.full_session_id)}" onclick="openSessionDetail(this.dataset.session)">${esc(s.session_id)}&hellip;</button></td>
       <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
       <td class="muted">${esc(s.duration_min)}m</td>
@@ -976,6 +1255,85 @@ function renderSessionsTable(sessions) {
       ${costCell}
     </tr>`;
   }).join('');
+}
+
+function renderToolCostTable(rows) {
+  document.getElementById('tool-cost-body').innerHTML = rows.map(t => {
+    const costCell = t.cost ? `<td class="cost">${fmtCost(t.cost)}</td>` : `<td class="cost-na">n/a</td>`;
+    return `<tr>
+      <td>${esc(t.tool)}</td>
+      <td class="num">${fmt(t.turns)}</td>
+      <td class="num">${fmt(t.input)}</td>
+      <td class="num">${fmt(t.output)}</td>
+      <td class="num">${fmt(t.cache_read)}</td>
+      <td class="num">${fmt(t.cache_creation)}</td>
+      ${costCell}
+    </tr>`;
+  }).join('');
+}
+
+function renderSessionSignalsTable(rows) {
+  document.getElementById('session-signals-body').innerHTML = rows.map(s => {
+    return `<tr>
+      <td class="muted" style="font-family:monospace"><button class="link-btn" data-session="${esc(s.full_session_id)}" onclick="openSessionDetail(this.dataset.session)">${esc(s.session_id)}&hellip;</button></td>
+      <td>${esc(s.project)}</td>
+      <td class="cost">${fmtCost(s.cost)}</td>
+      <td class="cost">${fmtCost(s.cost_per_min)}</td>
+      <td class="num">${fmt(s.tokens_per_min)}</td>
+      <td class="num">${fmt(s.output_per_turn)}</td>
+      <td class="num">${fmtPct(s.cache_share)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderSessionDetail(d) {
+  selectedSessionDetail = d;
+  const s = d.session;
+  const c = calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+  const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+  const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
+  document.getElementById('session-detail-card').classList.remove('hidden');
+  document.getElementById('session-detail-title').textContent = 'Session Drilldown — ' + s.display_id + '…';
+  document.getElementById('session-detail-stats').innerHTML = [
+    ['Project', s.project],
+    ['Model', s.model],
+    ['Duration', s.duration_min + 'm'],
+    ['Turns', fmt(s.turns)],
+    ['Tokens', fmt(tokens)],
+    ['Cost', fmtCost(c.total)],
+    ['Cache Share', fmtPct(promptTokens ? ((s.cache_read || 0) + (s.cache_creation || 0)) / promptTokens : 0)],
+    ['Cache Savings', fmtCost(c.cache_savings)],
+  ].map(([label, value]) => `<div class="detail-stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join('');
+  document.getElementById('session-detail-body').innerHTML = d.turns.map(t => {
+    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+    return `<tr>
+      <td class="muted">${esc(t.timestamp)}</td>
+      <td>${esc(t.tool)}</td>
+      <td><span class="model-tag">${esc(t.model)}</span></td>
+      <td class="num">${fmt(t.input)}</td>
+      <td class="num">${fmt(t.output)}</td>
+      <td class="num">${fmt(t.cache_read)}</td>
+      <td class="num">${fmt(t.cache_creation)}</td>
+      <td class="num">${fmt(t.cache_creation_5m || 0)}</td>
+      <td class="num">${fmt(t.cache_creation_1h || 0)}</td>
+      <td class="muted">${t.duration_ms ? (t.duration_ms / 1000).toFixed(1) + 's' : ''}</td>
+      <td class="muted">${esc(t.stop_reason || '')}</td>
+      <td class="muted">${esc(t.service_tier || '')}</td>
+      <td class="cost">${fmtCost(cost)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('session-detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function openSessionDetail(sessionId) {
+  try {
+    const resp = await fetch('/api/session?session_id=' + encodeURIComponent(sessionId));
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
+    renderSessionDetail(d);
+  } catch(e) {
+    console.error(e);
+  }
 }
 
 function setModelSort(col) {
@@ -1153,6 +1511,16 @@ function exportSessionsCSV() {
   downloadCSV('sessions', header, rows);
 }
 
+function exportSessionTurnsCSV() {
+  if (!selectedSessionDetail) return;
+  const header = ['Time', 'Tool', 'Model', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Cache 5m', 'Cache 1h', 'Duration (ms)', 'Stop Reason', 'Service Tier', 'Inference Geo', 'Sidechain', 'Compact Summary', 'Est. Cost'];
+  const rows = selectedSessionDetail.turns.map(t => {
+    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+    return [t.timestamp, t.tool, t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_5m || 0, t.cache_creation_1h || 0, t.duration_ms || 0, t.stop_reason || '', t.service_tier || '', t.inference_geo || '', t.is_sidechain ? 1 : 0, t.is_compact_summary ? 1 : 0, cost.toFixed(4)];
+  });
+  downloadCSV('session_' + selectedSessionDetail.session.display_id + '_turns', header, rows);
+}
+
 function exportProjectsCSV() {
   const header = ['Project', 'Sessions', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastByProject.map(p => {
@@ -1252,14 +1620,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
+        elif path == "/api/data":
             data = get_dashboard_data()
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/session":
+            params = parse_qs(parsed.query)
+            session_id = params.get("session_id", [""])[0]
+            data = get_session_detail(session_id)
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1272,7 +1653,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == "/api/rescan":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/rescan":
             # Full rebuild: delete DB and rescan from scratch.
             # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
             # patch the module globals are honored (scan's defaults are
@@ -1300,7 +1682,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = HTTPServer((host, port), DashboardHandler)
+    server = ThreadingHTTPServer((host, port), DashboardHandler)
     print(f"Dashboard running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:

@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
-from dashboard import get_dashboard_data, DashboardHandler, HTML_TEMPLATE
+from dashboard import get_dashboard_data, get_session_detail, DashboardHandler, HTML_TEMPLATE
 
 try:
     from http.server import HTTPServer
@@ -61,6 +61,7 @@ class TestGetDashboardData(unittest.TestCase):
         data = get_dashboard_data(db_path=self.db_path)
         self.assertIn("all_models", data)
         self.assertIn("daily_by_model", data)
+        self.assertIn("tool_by_model", data)
         self.assertIn("sessions_all", data)
         self.assertIn("generated_at", data)
 
@@ -77,6 +78,7 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertEqual(session["input"], 5000)
         self.assertEqual(session["cache_read"], 500)
         self.assertEqual(session["cache_creation"], 200)
+        self.assertEqual(session["full_session_id"], "sess-abc123")
 
     def test_daily_by_model_populated(self):
         data = get_dashboard_data(db_path=self.db_path)
@@ -125,6 +127,24 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertTrue(all(r["model"] == "claude-sonnet-4-6" for r in rows))
         self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
 
+    def test_tool_by_model_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        rows = data["tool_by_model"]
+        self.assertGreater(len(rows), 0)
+        self.assertIn("tool", rows[0])
+        self.assertIn("cache_read", rows[0])
+
+    def test_session_detail_returns_turns(self):
+        data = get_session_detail("sess-abc123", db_path=self.db_path)
+        self.assertEqual(data["session"]["session_id"], "sess-abc123")
+        self.assertEqual(data["session"]["cache_read"], 500)
+        self.assertEqual(len(data["turns"]), 2)
+        self.assertEqual(data["turns"][0]["input"], 500)
+
+    def test_session_detail_missing_session(self):
+        data = get_session_detail("missing", db_path=self.db_path)
+        self.assertIn("error", data)
+
 
 class TestDashboardHTTP(unittest.TestCase):
     """Integration test: start server and make HTTP requests."""
@@ -168,6 +188,12 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("text/html", resp.headers["Content-Type"])
 
+    def test_index_with_query_returns_html(self):
+        url = f"http://127.0.0.1:{self.port}/?range=7d"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/html", resp.headers["Content-Type"])
+
     def test_api_data_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/data"
         with urllib.request.urlopen(url) as resp:
@@ -176,6 +202,14 @@ class TestDashboardHTTP(unittest.TestCase):
             data = json.loads(resp.read())
             # Should have expected keys (or error if no DB)
             self.assertTrue("all_models" in data or "error" in data)
+
+    def test_api_session_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/session?session_id=missing"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            self.assertIn("error", data)
 
     def test_api_rescan_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/rescan"
@@ -236,6 +270,13 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("setSessionSort('cache_creation')", HTML_TEMPLATE)
         self.assertIn("${fmt(s.cache_read)}", HTML_TEMPLATE)
         self.assertIn("${fmt(s.cache_creation)}", HTML_TEMPLATE)
+
+    def test_template_has_drilldown_and_metric_tables(self):
+        self.assertIn('id="session-detail-card"', HTML_TEMPLATE)
+        self.assertIn('id="cost-breakdown-body"', HTML_TEMPLATE)
+        self.assertIn('id="tool-cost-body"', HTML_TEMPLATE)
+        self.assertIn('id="session-signals-body"', HTML_TEMPLATE)
+        self.assertIn("function openSessionDetail(", HTML_TEMPLATE)
 
     def test_hourly_filter_uses_range_bounds(self):
         """Hourly filter should use the same date bounds as the rest of the UI."""
