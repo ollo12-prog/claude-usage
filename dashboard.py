@@ -1241,6 +1241,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self.send_response(200)
