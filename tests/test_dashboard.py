@@ -79,6 +79,7 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertEqual(session["cache_read"], 500)
         self.assertEqual(session["cache_creation"], 200)
         self.assertEqual(session["full_session_id"], "sess-abc123")
+        self.assertEqual(session["tools"], ["<none>"])
 
     def test_daily_by_model_populated(self):
         data = get_dashboard_data(db_path=self.db_path)
@@ -272,11 +273,21 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("${fmt(s.cache_creation)}", HTML_TEMPLATE)
 
     def test_template_has_drilldown_and_metric_tables(self):
-        self.assertIn('id="session-detail-card"', HTML_TEMPLATE)
+        self.assertIn('id="session-detail-panel"', HTML_TEMPLATE)
+        self.assertIn('id="chart-session-timeline"', HTML_TEMPLATE)
         self.assertIn('id="cost-breakdown-body"', HTML_TEMPLATE)
         self.assertIn('id="tool-cost-body"', HTML_TEMPLATE)
         self.assertIn('id="session-signals-body"', HTML_TEMPLATE)
         self.assertIn("function openSessionDetail(", HTML_TEMPLATE)
+        self.assertIn("function closeSessionDetail(", HTML_TEMPLATE)
+
+    def test_template_has_session_filters(self):
+        self.assertIn('id="session-project-filter"', HTML_TEMPLATE)
+        self.assertIn('id="session-branch-filter"', HTML_TEMPLATE)
+        self.assertIn('id="session-tool-filter"', HTML_TEMPLATE)
+        self.assertIn('id="session-min-cost-filter"', HTML_TEMPLATE)
+        self.assertIn('id="session-cache-filter"', HTML_TEMPLATE)
+        self.assertIn("function applySessionFilters(", HTML_TEMPLATE)
 
     def test_hourly_filter_uses_range_bounds(self):
         """Hourly filter should use the same date bounds as the rest of the UI."""

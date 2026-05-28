@@ -107,12 +107,20 @@ def get_dashboard_data(db_path=DB_PATH):
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
-            session_id, project_name, first_timestamp, last_timestamp,
-            total_input_tokens, total_output_tokens,
-            total_cache_read, total_cache_creation, model, turn_count,
-            git_branch
-        FROM sessions
-        ORDER BY last_timestamp DESC
+            s.session_id, s.project_name, s.first_timestamp, s.last_timestamp,
+            s.total_input_tokens, s.total_output_tokens,
+            s.total_cache_read, s.total_cache_creation, s.model, s.turn_count,
+            s.git_branch,
+            COALESCE(t.tools, '') as tools
+        FROM sessions s
+        LEFT JOIN (
+            SELECT
+                session_id,
+                GROUP_CONCAT(DISTINCT COALESCE(tool_name, '<none>')) as tools
+            FROM turns
+            GROUP BY session_id
+        ) t ON t.session_id = s.session_id
+        ORDER BY s.last_timestamp DESC
     """).fetchall()
 
     sessions_all = []
@@ -132,6 +140,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
+            "tools":         [x for x in (r["tools"] or "").split(",") if x],
             "turns":         r["turn_count"] or 0,
             "input":         r["total_input_tokens"] or 0,
             "output":        r["total_output_tokens"] or 0,
@@ -336,10 +345,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
   .link-btn { background: transparent; border: none; color: var(--blue); cursor: pointer; font: inherit; padding: 0; }
   .link-btn:hover { text-decoration: underline; }
+  .session-filter-bar { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr) 100px auto auto; gap: 10px; align-items: end; margin-bottom: 14px; }
+  .filter-field label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px; }
+  .filter-field input, .filter-field select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 6px 8px; font: inherit; font-size: 12px; }
+  .filter-field input:focus, .filter-field select:focus { outline: none; border-color: var(--accent); }
+  .filter-check { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding-bottom: 7px; white-space: nowrap; }
+  .filter-check input { accent-color: var(--accent); }
   .detail-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
   .detail-stat { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .detail-stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
   .detail-stat .value { font-size: 15px; font-weight: 700; }
+  .side-panel-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity 0.18s; z-index: 20; }
+  .side-panel-backdrop.open { opacity: 1; pointer-events: auto; }
+  .side-panel { position: fixed; top: 0; right: 0; width: min(920px, 92vw); height: 100vh; background: var(--card); border-left: 1px solid var(--border); box-shadow: -18px 0 40px rgba(0,0,0,0.35); transform: translateX(100%); transition: transform 0.2s ease; z-index: 21; display: flex; flex-direction: column; }
+  .side-panel.open { transform: translateX(0); }
+  .side-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+  .side-panel-header .section-title { margin-bottom: 0; }
+  .panel-actions { display: flex; align-items: center; gap: 8px; }
+  .panel-close { width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
+  .panel-close:hover { color: var(--text); border-color: var(--accent); }
+  .side-panel-body { padding: 18px; overflow-y: auto; }
+  .timeline-wrap { position: relative; height: 220px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .hidden { display: none; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
 
@@ -350,7 +376,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a { color: var(--blue); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
-  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+  @media (max-width: 900px) { .session-filter-bar { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } .session-filter-bar { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -440,6 +467,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="table-card">
     <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="session-filter-bar">
+      <div class="filter-field">
+        <label for="session-project-filter">Project</label>
+        <input id="session-project-filter" type="search" placeholder="Any project" oninput="onSessionFilterChange()">
+      </div>
+      <div class="filter-field">
+        <label for="session-branch-filter">Branch</label>
+        <input id="session-branch-filter" type="search" placeholder="Any branch" oninput="onSessionFilterChange()">
+      </div>
+      <div class="filter-field">
+        <label for="session-tool-filter">Tool</label>
+        <select id="session-tool-filter" onchange="onSessionFilterChange()"><option value="">All tools</option></select>
+      </div>
+      <div class="filter-field">
+        <label for="session-min-cost-filter">Min Cost</label>
+        <input id="session-min-cost-filter" type="number" min="0" step="0.01" placeholder="$0" oninput="onSessionFilterChange()">
+      </div>
+      <label class="filter-check"><input id="session-cache-filter" type="checkbox" onchange="onSessionFilterChange()">Cache creation</label>
+      <button class="filter-btn" onclick="clearSessionFilters()">Clear</button>
+    </div>
     <table>
       <thead><tr>
         <th>Session</th>
@@ -455,31 +502,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
-    </table>
-  </div>
-  <div class="table-card hidden" id="session-detail-card">
-    <div class="section-header">
-      <div class="section-title" id="session-detail-title">Session Drilldown</div>
-      <button class="export-btn" onclick="exportSessionTurnsCSV()" title="Export selected session turns to CSV">&#x2913; CSV</button>
-    </div>
-    <div class="detail-stats" id="session-detail-stats"></div>
-    <table>
-      <thead><tr>
-        <th>Time</th>
-        <th>Tool</th>
-        <th>Model</th>
-        <th>Input</th>
-        <th>Output</th>
-        <th>Cache Read</th>
-        <th>Cache Creation</th>
-        <th>Cache 5m</th>
-        <th>Cache 1h</th>
-        <th>Duration</th>
-        <th>Stop</th>
-        <th>Tier</th>
-        <th>Est. Cost</th>
-      </tr></thead>
-      <tbody id="session-detail-body"></tbody>
     </table>
   </div>
   <div class="table-card">
@@ -543,6 +565,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="side-panel-backdrop" id="session-detail-backdrop" onclick="closeSessionDetail()"></div>
+<aside class="side-panel" id="session-detail-panel" aria-label="Session drilldown">
+  <div class="side-panel-header">
+    <div class="section-title" id="session-detail-title">Session Drilldown</div>
+    <div class="panel-actions">
+      <button class="export-btn" onclick="exportSessionTurnsCSV()" title="Export selected session turns to CSV">&#x2913; CSV</button>
+      <button class="panel-close" onclick="closeSessionDetail()" title="Close">&times;</button>
+    </div>
+  </div>
+  <div class="side-panel-body">
+    <div class="detail-stats" id="session-detail-stats"></div>
+    <div class="timeline-wrap"><canvas id="chart-session-timeline"></canvas></div>
+    <table>
+      <thead><tr>
+        <th>Time</th>
+        <th>Tool</th>
+        <th>Model</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Cache 5m</th>
+        <th>Cache 1h</th>
+        <th>Duration</th>
+        <th>Stop</th>
+        <th>Tier</th>
+        <th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="session-detail-body"></tbody>
+    </table>
+  </div>
+</aside>
+
 <footer>
   <div class="footer-content">
     <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
@@ -581,6 +636,7 @@ let lastByProject = [];
 let lastByProjectBranch = [];
 let lastByTool = [];
 let selectedSessionDetail = null;
+let sessionFilters = { project: '', branch: '', tool: '', minCost: 0, hasCacheCreation: false };
 let sessionSortDir = 'desc';
 let hourlyTZ = 'local';  // 'local' or 'utc'
 
@@ -817,6 +873,58 @@ function clearAllModels() {
   updateURL(); applyFilter();
 }
 
+// ── Session filters ───────────────────────────────────────────────────────
+function buildSessionFilterUI(sessions) {
+  const tools = new Set();
+  for (const s of sessions) {
+    for (const tool of (s.tools || [])) {
+      if (tool) tools.add(tool);
+    }
+  }
+  const toolSelect = document.getElementById('session-tool-filter');
+  const current = toolSelect.value;
+  toolSelect.innerHTML = '<option value="">All tools</option>' + [...tools].sort((a, b) => a.localeCompare(b)).map(t =>
+    `<option value="${esc(t)}">${esc(t)}</option>`
+  ).join('');
+  if ([...toolSelect.options].some(o => o.value === current)) toolSelect.value = current;
+}
+
+function readSessionFilters() {
+  sessionFilters = {
+    project: document.getElementById('session-project-filter').value.trim().toLowerCase(),
+    branch: document.getElementById('session-branch-filter').value.trim().toLowerCase(),
+    tool: document.getElementById('session-tool-filter').value,
+    minCost: parseFloat(document.getElementById('session-min-cost-filter').value) || 0,
+    hasCacheCreation: document.getElementById('session-cache-filter').checked,
+  };
+}
+
+function onSessionFilterChange() {
+  readSessionFilters();
+  applyFilter();
+}
+
+function clearSessionFilters() {
+  document.getElementById('session-project-filter').value = '';
+  document.getElementById('session-branch-filter').value = '';
+  document.getElementById('session-tool-filter').value = '';
+  document.getElementById('session-min-cost-filter').value = '';
+  document.getElementById('session-cache-filter').checked = false;
+  readSessionFilters();
+  applyFilter();
+}
+
+function applySessionFilters(sessions) {
+  return sessions.filter(s => {
+    if (sessionFilters.project && !(s.project || '').toLowerCase().includes(sessionFilters.project)) return false;
+    if (sessionFilters.branch && !(s.branch || '').toLowerCase().includes(sessionFilters.branch)) return false;
+    if (sessionFilters.tool && !(s.tools || []).includes(sessionFilters.tool)) return false;
+    if (sessionFilters.hasCacheCreation && !(s.cache_creation > 0)) return false;
+    if (sessionFilters.minCost && calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation) < sessionFilters.minCost) return false;
+    return true;
+  });
+}
+
 // ── URL persistence ────────────────────────────────────────────────────────
 function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
@@ -932,9 +1040,10 @@ function applyFilter() {
   }
 
   // Filter sessions by model + date range
-  const filteredSessions = rawData.sessions_all.filter(s =>
+  const rangeFilteredSessions = rawData.sessions_all.filter(s =>
     selectedModels.has(s.model) && (!start || s.last_date >= start) && (!end || s.last_date <= end)
   );
+  const filteredSessions = applySessionFilters(rangeFilteredSessions);
 
   // Add session counts into modelMap
   for (const s of filteredSessions) {
@@ -1292,7 +1401,8 @@ function renderSessionDetail(d) {
   const c = calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
   const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
   const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
-  document.getElementById('session-detail-card').classList.remove('hidden');
+  document.getElementById('session-detail-panel').classList.add('open');
+  document.getElementById('session-detail-backdrop').classList.add('open');
   document.getElementById('session-detail-title').textContent = 'Session Drilldown — ' + s.display_id + '…';
   document.getElementById('session-detail-stats').innerHTML = [
     ['Project', s.project],
@@ -1322,7 +1432,63 @@ function renderSessionDetail(d) {
       <td class="cost">${fmtCost(cost)}</td>
     </tr>`;
   }).join('');
-  document.getElementById('session-detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  renderSessionTimeline(d.turns);
+}
+
+function renderSessionTimeline(turns) {
+  const ctx = document.getElementById('chart-session-timeline').getContext('2d');
+  if (charts.sessionTimeline) charts.sessionTimeline.destroy();
+  const labels = turns.map((t, i) => (i + 1) + ' · ' + (t.tool || '<none>'));
+  charts.sessionTimeline = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Input',          data: turns.map(t => t.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens', yAxisID: 'y' },
+        { label: 'Output',         data: turns.map(t => t.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens', yAxisID: 'y' },
+        { label: 'Cache Read',     data: turns.map(t => t.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens', yAxisID: 'y' },
+        { label: 'Cache Creation', data: turns.map(t => t.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens', yAxisID: 'y' },
+        {
+          label: 'Cost',
+          type: 'line',
+          data: turns.map(t => calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation)),
+          borderColor: '#4ade80',
+          backgroundColor: 'rgba(74,222,128,0.18)',
+          pointRadius: 3,
+          tension: 0.25,
+          yAxisID: 'y1',
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            title: items => {
+              const t = turns[items[0].dataIndex];
+              return (t.timestamp || '') + ' · ' + (t.tool || '<none>');
+            },
+            label: item => item.dataset.label === 'Cost'
+              ? ' Cost: ' + fmtCost(item.parsed.y)
+              : ' ' + item.dataset.label + ': ' + fmt(item.parsed.y),
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: '#2a2d3a' } },
+        y: { stacked: true, beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: '#4ade80', callback: v => '$' + Number(v).toFixed(2) }, grid: { drawOnChartArea: false } },
+      }
+    }
+  });
+}
+
+function closeSessionDetail() {
+  document.getElementById('session-detail-panel').classList.remove('open');
+  document.getElementById('session-detail-backdrop').classList.remove('open');
 }
 
 async function openSessionDetail(sessionId) {
@@ -1581,6 +1747,8 @@ async function loadData() {
       );
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
+      buildSessionFilterUI(d.sessions_all || []);
+      readSessionFilters();
       updateSortIcons();
       updateModelSortIcons();
       updateProjectSortIcons();
