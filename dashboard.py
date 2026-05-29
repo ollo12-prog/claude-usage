@@ -637,7 +637,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Custom price edits are saved in this browser only. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of May 2026. Custom price edits are saved in this browser only. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -717,9 +717,10 @@ function tzDisplayName(tzMode) {
   }
 }
 
-// ── Pricing (Anthropic API, April 2026 defaults; editable locally) ─────────
+// ── Pricing (Anthropic API, May 2026 defaults; editable locally) ───────────
 const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
 const DEFAULT_PRICING = {
+  'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
@@ -818,7 +819,7 @@ function getPricing(model) {
     if (model.startsWith(key)) return PRICING[key];
   }
   const m = model.toLowerCase();
-  if (m.includes('opus'))   return PRICING['claude-opus-4-7'];
+  if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
   return null;
@@ -1273,7 +1274,7 @@ function renderStats(t) {
     { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, Apr 2026', color: '#4ade80' },
+    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, May 2026', color: '#4ade80' },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">

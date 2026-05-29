@@ -104,12 +104,13 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 ## Cost estimates
 
-Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
+Costs are calculated using **Anthropic API pricing as of May 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
 
 **Only models whose name contains `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
 
 | Model | Input | Output | Cache Write | Cache Read |
 |-------|-------|--------|------------|-----------|
+| claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
