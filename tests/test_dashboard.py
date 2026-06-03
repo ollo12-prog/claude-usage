@@ -261,15 +261,18 @@ class TestMixedNullAndEmptyModel(unittest.TestCase):
         self.assertEqual(hour9[0]["turns"], 2)
 
 
-class TestNonBillableModelFallback(unittest.TestCase):
-    """Regression: when the user has only non-billable models (e.g. gemma, glm,
-    local LLMs) — or all turns lack a model field — the default model selection
-    must fall back to ALL models so the dashboard isn't blank."""
+class TestDefaultModelSelectionShowsAll(unittest.TestCase):
+    """Regression: local-LLM / non-billable runs (qwen, gemma, glm — or turns
+    with no model field) must NOT be hidden by default, even when billable
+    Anthropic runs coexist in the same data. The model filter controls
+    visibility, not billing, so the default selection is ALL models; cost
+    columns still show N/A for non-billable models via isBillable()."""
 
-    def test_readurlmodels_fallback_in_html_template(self):
-        # The fallback logic is JS; we assert the source contains the guard so
-        # a future refactor doesn't silently remove it.
-        self.assertIn("billable.length ? billable : allModels", HTML_TEMPLATE)
+    def test_default_model_selection_is_all_models(self):
+        # The selection logic is JS; assert the source defaults to all models so
+        # a future refactor doesn't silently re-introduce the billable-only
+        # default that hid local-LLM runs.
+        self.assertIn("if (!param) return new Set(allModels)", HTML_TEMPLATE)
 
 
 class TestDashboardHTTP(unittest.TestCase):

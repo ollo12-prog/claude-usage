@@ -1096,21 +1096,17 @@ function modelPriority(m) {
 
 function readURLModels(allModels) {
   const param = new URLSearchParams(window.location.search).get('models');
-  if (!param) {
-    const billable = allModels.filter(m => isBillable(m));
-    // Fallback: if the user only has non-billable / unknown models (e.g. all
-    // local-LLM runs), default to all models so the dashboard isn't blank.
-    return new Set(billable.length ? billable : allModels);
-  }
+  // Default to all models: the filter controls visibility, not billing. Local
+  // (non-Anthropic) models show with N/A cost but must not be hidden by default
+  // — including when billable Anthropic runs coexist in the same data.
+  if (!param) return new Set(allModels);
   const fromURL = new Set(param.split(',').map(s => s.trim()).filter(Boolean));
   return new Set(allModels.filter(m => fromURL.has(m)));
 }
 
 function isDefaultModelSelection(allModels) {
-  const billable = allModels.filter(m => isBillable(m));
-  const expected = billable.length ? billable : allModels;
-  if (selectedModels.size !== expected.length) return false;
-  return expected.every(m => selectedModels.has(m));
+  if (selectedModels.size !== allModels.length) return false;
+  return allModels.every(m => selectedModels.has(m));
 }
 
 function buildFilterUI(allModels) {
