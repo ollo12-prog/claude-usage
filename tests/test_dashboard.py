@@ -147,6 +147,131 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertIn("error", data)
 
 
+class TestEmptyStringModelNormalization(unittest.TestCase):
+    """Regression: turns with model='' (empty string) must group as 'unknown'.
+    COALESCE(model, 'unknown') alone returns '' because empty string isn't NULL;
+    NULLIF(model, '') is needed first."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-empty", "project_name": "u/p",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T09:05:00Z",
+            "git_branch": "", "model": "",
+            "total_input_tokens": 100, "total_output_tokens": 50,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 1,
+        }])
+        insert_turns(conn, [{
+            "session_id": "sess-empty", "timestamp": "2026-04-08T09:05:00Z",
+            "model": "", "input_tokens": 100, "output_tokens": 50,
+            "cache_read_tokens": 0, "cache_creation_tokens": 0,
+            "tool_name": None, "cwd": "/tmp",
+        }])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_all_models_contains_unknown_not_empty(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("unknown", data["all_models"])
+        self.assertNotIn("", data["all_models"])
+
+    def test_daily_by_model_contains_unknown_not_empty(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        models = {r["model"] for r in data["daily_by_model"]}
+        self.assertIn("unknown", models)
+        self.assertNotIn("", models)
+
+    def test_hourly_by_model_contains_unknown_not_empty(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        models = {r["model"] for r in data["hourly_by_model"]}
+        self.assertIn("unknown", models)
+        self.assertNotIn("", models)
+
+
+class TestMixedNullAndEmptyModel(unittest.TestCase):
+    """Regression: a mix of model=NULL and model='' rows must collapse into a
+    SINGLE 'unknown' group across all aggregations. Without `GROUP BY
+    COALESCE(NULLIF(model, ''), 'unknown')` (matching the SELECT expression),
+    SQLite groups by raw value and emits two distinct 'unknown' rows."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-mix", "project_name": "u/p",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "", "model": "",
+            "total_input_tokens": 200, "total_output_tokens": 100,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 2,
+        }])
+        # Insert one turn with model='' and one with model=NULL on the same day.
+        # Use raw INSERT for the NULL row because insert_turns() requires the
+        # model key to exist (would error on missing key, not on None).
+        insert_turns(conn, [{
+            "session_id": "sess-mix", "timestamp": "2026-04-08T09:00:00Z",
+            "model": "", "input_tokens": 100, "output_tokens": 50,
+            "cache_read_tokens": 0, "cache_creation_tokens": 0,
+            "tool_name": None, "cwd": "/tmp",
+        }])
+        conn.execute("""
+            INSERT INTO turns (session_id, timestamp, model, input_tokens,
+                output_tokens, cache_read_tokens, cache_creation_tokens,
+                tool_name, cwd)
+            VALUES ('sess-mix', '2026-04-08T09:30:00Z', NULL, 100, 50, 0, 0, NULL, '/tmp')
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_all_models_collapses_to_single_unknown(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        unknowns = [m for m in data["all_models"] if m == "unknown"]
+        self.assertEqual(len(unknowns), 1, f"got duplicate 'unknown' rows: {data['all_models']}")
+
+    def test_daily_collapses_to_single_unknown(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        unknown_rows = [r for r in data["daily_by_model"] if r["model"] == "unknown"]
+        # One day, one model bucket
+        self.assertEqual(len(unknown_rows), 1, f"got {unknown_rows}")
+        self.assertEqual(unknown_rows[0]["turns"], 2)
+        self.assertEqual(unknown_rows[0]["input"], 200)
+
+    def test_hourly_collapses_to_single_unknown(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        # Both turns are in UTC hour 9 — must be one row, not two
+        hour9 = [r for r in data["hourly_by_model"]
+                 if r["hour"] == 9 and r["model"] == "unknown"]
+        self.assertEqual(len(hour9), 1, f"got {hour9}")
+        self.assertEqual(hour9[0]["turns"], 2)
+
+
+class TestNonBillableModelFallback(unittest.TestCase):
+    """Regression: when the user has only non-billable models (e.g. gemma, glm,
+    local LLMs) — or all turns lack a model field — the default model selection
+    must fall back to ALL models so the dashboard isn't blank."""
+
+    def test_readurlmodels_fallback_in_html_template(self):
+        # The fallback logic is JS; we assert the source contains the guard so
+        # a future refactor doesn't silently remove it.
+        self.assertIn("billable.length ? billable : allModels", HTML_TEMPLATE)
+
+
 class TestDashboardHTTP(unittest.TestCase):
     """Integration test: start server and make HTTP requests."""
 
@@ -189,11 +314,22 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("text/html", resp.headers["Content-Type"])
 
-    def test_index_with_query_returns_html(self):
-        url = f"http://127.0.0.1:{self.port}/?range=7d"
-        with urllib.request.urlopen(url) as resp:
+    def test_index_with_query_string_returns_html(self):
+        # Regression: ?range=... and ?models=... must not 404. The dashboard
+        # itself rewrites the URL with these params via history.replaceState,
+        # so anything that reloads or bookmarks the page hits this path.
+        for qs in ("?range=all", "?range=30d&models=claude-opus-4-7"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/{qs}") as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn(b"Claude Code Usage", resp.read())
+
+    def test_api_data_with_query_string(self):
+        # /api/data is fetched without query parameters today, but the route
+        # should be tolerant if any are tacked on (e.g. cache-busting).
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/api/data?_=cachebust"
+        ) as resp:
             self.assertEqual(resp.status, 200)
-            self.assertIn("text/html", resp.headers["Content-Type"])
 
     def test_api_data_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/data"
@@ -303,6 +439,15 @@ class TestHTMLTemplate(unittest.TestCase):
         """Hourly filter should use the same date bounds as the rest of the UI."""
         self.assertNotIn("cutoff", HTML_TEMPLATE)
         self.assertIn("(!start || r.day >= start) && (!end || r.day <= end)", HTML_TEMPLATE)
+
+    def test_today_range_button_present(self):
+        """The 'Today' range button is wired into RANGE_LABELS, RANGE_TICKS,
+        getRangeBounds, and the filter-bar HTML."""
+        self.assertIn("data-range=\"today\"", HTML_TEMPLATE)
+        self.assertIn("'today': 'Today'", HTML_TEMPLATE)
+        self.assertIn("'today': 1", HTML_TEMPLATE)
+        # Bounds case: today returns start === end === today's ISO date
+        self.assertIn("range === 'today'", HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):

@@ -1,2 +1,6 @@
 __pycache__/
 server.log
+logs/
+
+.pr-candidates.md
+/tmp/

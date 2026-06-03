@@ -38,6 +38,21 @@ Captures usage from:
 
 No `pip install`, no virtual environment, no build step.
 
+### macOS / Linux (Homebrew)
+```
+brew install --formula https://raw.githubusercontent.com/phuryn/claude-usage/main/Formula/claude-usage.rb
+claude-usage dashboard
+```
+
+After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
+
+### macOS / Linux (clone)
+```
+git clone https://github.com/phuryn/claude-usage
+cd claude-usage
+python3 cli.py dashboard
+```
+
 ### Windows
 ```
 git clone https://github.com/phuryn/claude-usage
@@ -45,18 +60,12 @@ cd claude-usage
 python cli.py dashboard
 ```
 
-### macOS / Linux
-```
-git clone https://github.com/phuryn/claude-usage
-cd claude-usage
-python3 cli.py dashboard
-```
 
 ---
 
 ## Usage
 
-> On macOS/Linux, use `python3` instead of `python` in all commands below.
+> On macOS/Linux, use `python3` instead of `python` in all commands below. If you installed via Homebrew, replace `python cli.py` with `claude-usage`.
 
 ```
 # Scan JSONL files and populate the database (~/.claude/usage.db)
@@ -127,3 +136,4 @@ Costs are calculated using **Anthropic API pricing as of May 2026** ([claude.com
 | `scanner.py` | Parses JSONL transcripts, writes to `~/.claude/usage.db` |
 | `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
 | `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
+| `Formula/claude-usage.rb` | Homebrew formula — install with `brew install --formula <raw-url>` |

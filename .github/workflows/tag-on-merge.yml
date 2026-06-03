@@ -1,0 +1,93 @@
+name: Auto-tag releases from CHANGELOG
+
+# Runs after each push to main. If CHANGELOG.md gained a new ## vX.Y.Z heading
+# anywhere in this push's commit range (compared to the push's `before` SHA),
+# create a lightweight tag with that version name pointing at the pushed
+# commit. CHANGELOG is the source of truth; tags are a deterministic
+# projection of it.
+#
+# No action when CHANGELOG wasn't touched, no action when an existing version
+# heading was edited (not added), no action when the resulting tag already
+# exists. So this is safe to re-run on force-pushes and amends.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need enough history to diff the whole push range (`before..after`)
+          # not just the tip commit. fetch-depth: 0 = full clone; small repo,
+          # cheap. Avoids edge cases where a multi-commit push lands a version
+          # heading in a non-tip commit.
+          fetch-depth: 0
+
+      - name: Detect new version heading in CHANGELOG
+        id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER:  ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # On a brand-new branch (first push), before is all zeros.
+          zeros="0000000000000000000000000000000000000000"
+          if [ "$BEFORE" = "$zeros" ] || [ -z "$BEFORE" ]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "Brand-new branch push; nothing to compare."
+            exit 0
+          fi
+
+          # Lines added to CHANGELOG.md across the entire pushed range that
+          # look like a version heading. Format: `## vX.Y.Z` (semver triplet
+          # required). The trailing-boundary group prevents `## v1.1.0a` from
+          # matching `v1.1.0`.
+          added_versions=$(git diff "$BEFORE..$AFTER" -- CHANGELOG.md \
+            | grep -E '^\+## v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)' \
+            | sed -E 's/^\+## (v[0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$).*/\1/' \
+            || true)
+
+          if [ -z "$added_versions" ]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "No new ## vX.Y.Z heading added to CHANGELOG; nothing to tag."
+            exit 0
+          fi
+
+          # If multiple new headings were added in one push, fail loudly —
+          # ambiguous which one to tag and shipping two releases in one merge
+          # is almost certainly not intended.
+          count=$(echo "$added_versions" | wc -l)
+          if [ "$count" -gt 1 ]; then
+            echo "::error::Multiple new version headings detected; refusing to auto-tag. Versions: $added_versions"
+            exit 1
+          fi
+
+          version=$(echo "$added_versions" | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Detected new release: $version"
+
+      - name: Create and push tag if it doesn't already exist
+        if: steps.detect.outputs.version != ''
+        env:
+          VERSION: ${{ steps.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Tag may already exist if someone tagged manually before the workflow
+          # caught up, or on a re-push of the same commit. Idempotent.
+          if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
+            echo "Tag $VERSION already exists on origin; nothing to do."
+            exit 0
+          fi
+
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          echo "Tagged $VERSION at $(git rev-parse HEAD)."

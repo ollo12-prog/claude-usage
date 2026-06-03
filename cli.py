@@ -358,11 +358,7 @@ def cmd_stats():
     conn.close()
 
 
-def cmd_dashboard(projects_dir=None, host=None, port=None):
-    import webbrowser
-    import threading
-    import time
-
+def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False):
     print("Running scan first...")
     cmd_scan(projects_dir=projects_dir)
 
@@ -372,12 +368,19 @@ def cmd_dashboard(projects_dir=None, host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = int(port or os.environ.get("PORT", "8080"))
 
-    def open_browser():
-        time.sleep(1.0)
-        webbrowser.open(f"http://{host}:{port}")
+    # Open a browser for users running this as a script (see README). The VS Code
+    # extension passes --no-browser since it embeds the dashboard in a webview.
+    if not no_browser:
+        import webbrowser
+        import threading
+        import time
 
-    t = threading.Thread(target=open_browser, daemon=True)
-    t.start()
+        def open_browser():
+            time.sleep(1.0)
+            webbrowser.open(f"http://{host}:{port}")
+
+        threading.Thread(target=open_browser, daemon=True).start()
+
     serve(host=host, port=port)
 
 
@@ -391,8 +394,8 @@ Usage:
   python cli.py today                        Show today's usage summary
   python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
-  python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT]
-                                                 Scan + start dashboard
+  python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT] [--no-browser]
+                                                 Scan + start dashboard (opens a browser unless --no-browser)
 """
 
 COMMANDS = {
@@ -424,6 +427,7 @@ if __name__ == "__main__":
             projects_dir=projects_dir,
             host=parse_named_arg(rest, "--host"),
             port=parse_named_arg(rest, "--port"),
+            no_browser="--no-browser" in rest,
         )
     elif command == "scan" and projects_dir:
         cmd_scan(projects_dir=projects_dir)

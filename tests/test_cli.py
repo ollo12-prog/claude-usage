@@ -1,6 +1,10 @@
 """Tests for cli.py - pricing, formatting, and cost calculation."""
 
+import io
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+import cli
 from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING
 
 
@@ -174,6 +178,19 @@ class TestPricingConsistency(unittest.TestCase):
             p = get_pricing(model)
             self.assertEqual(p["input"], 1.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 5.00, f"{model} output price wrong")
+
+
+class TestDashboardNoBrowser(unittest.TestCase):
+    """The VS Code extension passes --no-browser; CLI users get a browser."""
+
+    def test_no_browser_suppresses_webbrowser(self):
+        with mock.patch.object(cli, "cmd_scan"), \
+             mock.patch("dashboard.serve") as mock_serve, \
+             mock.patch("webbrowser.open") as mock_open, \
+             redirect_stdout(io.StringIO()):
+            cli.cmd_dashboard(host="127.0.0.1", port=9999, no_browser=True)
+            mock_open.assert_not_called()
+            mock_serve.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
-from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
@@ -21,10 +21,12 @@ def get_dashboard_data(db_path=DB_PATH):
     conn.row_factory = sqlite3.Row
 
     # ── All models (for filter UI) ────────────────────────────────────────────
+    # GROUP BY uses the normalised expression too so NULL and '' don't end up
+    # as two separate "unknown" rows.
     model_rows = conn.execute("""
-        SELECT COALESCE(model, 'unknown') as model
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') as model
         FROM turns
-        GROUP BY model
+        GROUP BY COALESCE(NULLIF(model, ''), 'unknown')
         ORDER BY SUM(input_tokens + output_tokens) DESC
     """).fetchall()
     all_models = [r["model"] for r in model_rows]
@@ -33,14 +35,14 @@ def get_dashboard_data(db_path=DB_PATH):
     daily_rows = conn.execute("""
         SELECT
             substr(timestamp, 1, 10)   as day,
-            COALESCE(model, 'unknown') as model,
+            COALESCE(NULLIF(model, ''), 'unknown') as model,
             SUM(input_tokens)          as input,
             SUM(output_tokens)         as output,
             SUM(cache_read_tokens)     as cache_read,
             SUM(cache_creation_tokens) as cache_creation,
             COUNT(*)                   as turns
         FROM turns
-        GROUP BY day, model
+        GROUP BY day, COALESCE(NULLIF(model, ''), 'unknown')
         ORDER BY day, model
     """).fetchall()
 
@@ -60,12 +62,12 @@ def get_dashboard_data(db_path=DB_PATH):
         SELECT
             substr(timestamp, 1, 10)                  as day,
             CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
-            COALESCE(model, 'unknown')                as model,
+            COALESCE(NULLIF(model, ''), 'unknown')    as model,
             SUM(output_tokens)                        as output,
             COUNT(*)                                  as turns
         FROM turns
         WHERE timestamp IS NOT NULL AND length(timestamp) >= 13
-        GROUP BY day, hour, model
+        GROUP BY day, hour, COALESCE(NULLIF(model, ''), 'unknown')
         ORDER BY day, hour, model
     """).fetchall()
 
@@ -267,21 +269,46 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg: #0f1117;
-    --card: #1a1d27;
-    --border: #2a2d3a;
-    --text: #e2e8f0;
-    --muted: #8892a4;
+    --bg: #161617;      /* page base */
+    --card: #1E1F20;    /* raised one step above the page */
+    --border: #2C2D2E;
+    --text: #BFBFBF;
+    --muted: #4F4F50;
     --accent: #d97757;
-    --blue: #4f8ef7;
-    --green: #4ade80;
+    --blue: #48A0C7;
+    --green: #74C991;
+    --red: #C74E39;
+    --raised: #2E2F31;  /* hover / raised surfaces — top of the elevation ladder */
+    --selected: #262626;  /* selected chips / tabs (neutral, not accent) */
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
+  /* VS Code-style scrollbars. The dashboard renders inside a webview iframe,
+     which doesn't inherit VS Code's --vscode-* theme variables, so we set the
+     scrollbar here: no arrows, grey thumb (#28292B, #8B8B8D on hover) over a
+     #121314 track, in a 21px gutter. Also fits the dark UI standalone. */
+  * { scrollbar-width: auto; scrollbar-color: #28292B #121314; }
+  ::-webkit-scrollbar { width: 21px; height: 21px; }
+  ::-webkit-scrollbar-track { background: #121314; }
+  ::-webkit-scrollbar-thumb { background-color: #28292B; border: 3px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: #8B8B8D; }
+  ::-webkit-scrollbar-thumb:active { background-color: #8B8B8D; }
+  ::-webkit-scrollbar-corner { background: #121314; }
+
   header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
-  header .meta { color: var(--muted); font-size: 12px; }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--text); }
+  header .header-title { display: flex; align-items: center; gap: 10px; }
+  /* The icon is a monochrome silhouette (white shape on transparent). We paint
+     it with the title color via a CSS mask + background-color, so it matches
+     `header h1` — the lightest text color. */
+  header .header-icon {
+    width: 26px; height: 26px; flex-shrink: 0; display: block;
+    background-color: var(--text);
+    -webkit-mask: url("icon.svg") no-repeat center / contain;
+    mask: url("icon.svg") no-repeat center / contain;
+  }
+  header .meta { color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; margin-right: 20px; }
   #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -292,15 +319,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #model-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
   .model-cb-label { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 12px; color: var(--muted); transition: border-color 0.15s, color 0.15s, background 0.15s; user-select: none; }
   .model-cb-label:hover { border-color: var(--accent); color: var(--text); }
-  .model-cb-label.checked { background: rgba(217,119,87,0.12); border-color: var(--accent); color: var(--text); }
+  .model-cb-label.checked { background: var(--selected); border-color: var(--accent); color: var(--text); }
   .model-cb-label input { display: none; }
   .filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
   .filter-btn:hover { border-color: var(--accent); color: var(--text); }
   .range-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
   .range-btn { padding: 4px 13px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }
   .range-btn:last-child { border-right: none; }
-  .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
-  .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+  .range-btn:hover { background: var(--raised); color: var(--text); }
+  .range-btn.active { background: var(--selected); color: var(--text); font-weight: 600; }
 
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -310,7 +337,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stat-card .sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
 
   .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  /* min-width:0 lets the grid column shrink below the canvas's intrinsic
+     pixel width; without it, narrowing the window can't narrow the container,
+     so Chart.js's ResizeObserver never fires until a data refresh rebuilds the
+     canvas. (Expanding already works — 1fr columns grow freely.) */
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; min-width: 0; }
   .chart-card.wide { grid-column: 1 / -1; }
   .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
   .chart-wrap { position: relative; height: 240px; }
@@ -322,10 +353,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .tz-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
   .tz-btn { padding: 3px 10px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
   .tz-btn:last-child { border-right: none; }
-  .tz-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
-  .tz-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); }
+  .tz-btn:hover { background: var(--raised); color: var(--text); }
+  .tz-btn.active { background: var(--selected); color: var(--text); }
   .peak-legend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
-  .peak-swatch { width: 10px; height: 10px; background: rgba(248,113,113,0.8); border-radius: 2px; display: inline-block; }
+  .peak-swatch { width: 10px; height: 10px; background: var(--red); border-radius: 2px; display: inline-block; }
 
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -334,8 +365,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .sort-icon { font-size: 9px; opacity: 0.8; }
   td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-  .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
+  tr:hover td { background: var(--raised); }
+  .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(72,160,199,0.15); color: var(--blue); }
   .cost { color: var(--green); font-family: monospace; }
   .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
   .num { font-family: monospace; }
@@ -386,6 +417,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .timeline-wrap { position: relative; height: 300px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .hidden { display: none; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  .table-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 12px; }
+  .table-foot:empty { margin-top: 0; }
+  .show-more-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .show-more-btn:hover { color: var(--text); border-color: var(--accent); }
+  .show-more-link { color: var(--blue); text-decoration: none; font-size: 12px; cursor: pointer; }
+  .show-more-link:hover { text-decoration: underline; }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
   .footer-content { max-width: 1400px; margin: 0 auto; }
@@ -400,7 +437,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Claude Code Usage Dashboard</h1>
+  <div class="header-title">
+    <span class="header-icon" role="img" aria-label="Claude Usage"></span>
+    <h1>Claude Code Usage</h1>
+  </div>
   <div class="meta" id="meta">Loading...</div>
   <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
 </header>
@@ -413,6 +453,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-group">
+    <button class="range-btn" data-range="today" onclick="setRange('today')">Today</button>
     <button class="range-btn" data-range="week" onclick="setRange('week')">This Week</button>
     <button class="range-btn" data-range="month" onclick="setRange('month')">This Month</button>
     <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')">Prev Month</button>
@@ -467,6 +508,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
+    <div class="table-foot" id="model-cost-foot"></div>
   </div>
   <div class="table-card">
     <div class="section-title">Cost Breakdown</div>
@@ -538,6 +580,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
+    <div class="table-foot" id="sessions-foot"></div>
   </div>
   <div class="table-card">
     <div class="section-title">Top Tools by Cost</div>
@@ -582,6 +625,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
+    <div class="table-foot" id="project-cost-foot"></div>
   </div>
   <div class="table-card">
     <div class="section-header"><div class="section-title">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
@@ -597,6 +641,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
+    <div class="table-foot" id="project-branch-cost-foot"></div>
   </div>
 </main>
 
@@ -669,7 +714,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of May 2026. Custom price edits are saved in this browser only. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of May 2026. Custom price edits are saved in this browser only. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -701,12 +746,32 @@ let projectSortDir = 'desc';
 let branchSortCol = 'cost';
 let branchSortDir = 'desc';
 let lastFilteredSessions = [];
+let lastByModel = [];
 let lastByProject = [];
 let lastByProjectBranch = [];
 let lastByTool = [];
 let selectedSessionDetail = null;
 let sessionFilters = { project: '', branch: '', tool: '', minCost: 0, hasCacheCreation: false };
 let sessionSortDir = 'desc';
+
+// Tables reveal rows in steps: 10 -> 25 -> 50, capped at 50 because rendering
+// more than that visibly hurts performance. Past 50 the footer offers a
+// "Download CSV to see more" link instead of another in-table step, plus a
+// Show less button that resets straight back to 10. Limits persist across
+// re-renders so sorting/filtering keeps the user's chosen depth (visible rows
+// always reflect the active sort).
+const TABLE_STEPS = [10, 25, 50];
+const TABLE_MAX = TABLE_STEPS[TABLE_STEPS.length - 1];  // hard cap on in-table rows
+function nextTableLimit(current, total) {
+  for (const s of TABLE_STEPS) {
+    if (s > current && s < total) return s;
+  }
+  return Math.min(total, TABLE_MAX);  // reveal everything, but never past the cap
+}
+let modelLimit = TABLE_STEPS[0];
+let sessionsLimit = TABLE_STEPS[0];
+let projectLimit = TABLE_STEPS[0];
+let branchLimit = TABLE_STEPS[0];
 let hourlyTZ = 'local';  // 'local' or 'utc'
 
 // ── Peak-hour config ───────────────────────────────────────────────────────
@@ -881,22 +946,80 @@ function fmt(n) {
   if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
   return n.toLocaleString();
 }
-function fmtCost(c)    { return '$' + c.toFixed(4); }
-function fmtCostBig(c) { return '$' + c.toFixed(2); }
+function fmtCost(c)    { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 }); }
+function fmtCostBig(c) { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmtPct(v)     { return isFinite(v) ? (v * 100).toFixed(1) + '%' : '0.0%'; }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
-const TOKEN_COLORS = {
-  input:          'rgba(79,142,247,0.8)',
-  output:         'rgba(167,139,250,0.8)',
-  cache_read:     'rgba(74,222,128,0.6)',
-  cache_creation: 'rgba(251,191,36,0.6)',
+// Warm/neutral palette kept in sync with the CSS :root variables so charts match
+// the Claude Code interface (less blue). Chart legends/axes use C.axis (a touch
+// lighter than --muted so small labels stay legible on the dark card); grid uses
+// C.border.
+const C = {
+  text:   '#BFBFBF',
+  muted:  '#4F4F50',
+  axis:   '#6F6F70',
+  border: '#2C2D2E',
+  card:   '#1E1F20',
+  blue:   '#48A0C7',
+  green:  '#74C991',
+  red:    '#C74E39',
+  accent: '#d97757',
+  amber:  '#D9A84E',
+  purple: '#9B7EC7',
+  teal:   '#5BB8A3',
+  mauve:  '#C77E9B',
 };
-const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
+const TOKEN_COLORS = {
+  input:          'rgba(72,160,199,0.85)',   // blue
+  output:         'rgba(217,119,87,0.85)',    // accent / coral
+  cache_read:     'rgba(116,201,145,0.75)',   // green
+  cache_creation: 'rgba(217,168,78,0.75)',    // amber
+};
+// Hover lifts on a dark theme: bars/series go to full opacity (a touch brighter).
+const TOKEN_HOVER = {
+  input:          'rgba(72,160,199,1)',
+  output:         'rgba(217,119,87,1)',
+  cache_read:     'rgba(116,201,145,1)',
+  cache_creation: 'rgba(217,168,78,1)',
+};
+// Donut / categorical palette — warm, Anthropic-leaning (clay, tan, sage, dusty
+// blue, mauve, ochre, taupe, terracotta) rather than a saturated rainbow.
+const MODEL_COLORS = ['#D97757','#C9A26B','#7FA98C','#6E97A8','#B98AA0','#D9A84E','#A88B6A','#C2705A'];
+
+// Tooltip color swatches: solid fill, no border (Chart.js's default draws a
+// bordered box that looked offset/inconsistent). Lines use their solid stroke
+// color instead of the translucent area fill.
+Chart.defaults.color = C.axis;
+// multiKeyBackground defaults to white and is drawn behind each tooltip swatch,
+// peeking out as a thin white border on plain-box charts — make it transparent.
+Chart.defaults.plugins.tooltip.multiKeyBackground = 'transparent';
+Chart.defaults.plugins.tooltip.callbacks.labelColor = (ctx) => {
+  const ds = ctx.dataset || {};
+  let col = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[ctx.dataIndex] : ds.backgroundColor;
+  if (ds.type === 'line') col = ds.borderColor;
+  return { borderColor: col, backgroundColor: col, borderWidth: 0 };
+};
+
+// Legend visibility must survive repaints (filter changes, auto-refresh, sort) —
+// the charts are destroyed and rebuilt each render, which otherwise resets any
+// series the user toggled off. We track hidden series by label per chart and
+// reapply on rebuild: dataset charts via `dataset.hidden`, the doughnut via
+// per-slice data visibility (see applyModelHidden).
+const hiddenSeries = { daily: new Set(), hourly: new Set(), project: new Set(), model: new Set() };
+function legendToggle(key) {
+  return (e, item, legend) => {
+    const ci = legend.chart;
+    const ds = ci.data.datasets[item.datasetIndex];
+    ds.hidden = !ds.hidden;
+    if (ds.hidden) hiddenSeries[key].add(ds.label); else hiddenSeries[key].delete(ds.label);
+    ci.update();
+  };
+}
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { 'today': 'Today', 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+const RANGE_TICKS  = { 'today': 1, 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
 const VALID_RANGES = Object.keys(RANGE_LABELS);
 
 function rangeIncludesToday(range) {
@@ -912,6 +1035,10 @@ function getRangeBounds(range) {
   if (range === 'all') return { start: null, end: null };
   const today = new Date();
   const iso = d => d.toISOString().slice(0, 10);
+  if (range === 'today') {
+    const t = iso(today);
+    return { start: t, end: t };
+  }
   if (range === 'week') {
     const day = today.getDay();
     const diffToMon = day === 0 ? 6 : day - 1;
@@ -969,15 +1096,21 @@ function modelPriority(m) {
 
 function readURLModels(allModels) {
   const param = new URLSearchParams(window.location.search).get('models');
-  if (!param) return new Set(allModels.filter(m => isBillable(m)));
+  if (!param) {
+    const billable = allModels.filter(m => isBillable(m));
+    // Fallback: if the user only has non-billable / unknown models (e.g. all
+    // local-LLM runs), default to all models so the dashboard isn't blank.
+    return new Set(billable.length ? billable : allModels);
+  }
   const fromURL = new Set(param.split(',').map(s => s.trim()).filter(Boolean));
   return new Set(allModels.filter(m => fromURL.has(m)));
 }
 
 function isDefaultModelSelection(allModels) {
   const billable = allModels.filter(m => isBillable(m));
-  if (selectedModels.size !== billable.length) return false;
-  return billable.every(m => selectedModels.has(m));
+  const expected = billable.length ? billable : allModels;
+  if (selectedModels.size !== expected.length) return false;
+  return expected.every(m => selectedModels.has(m));
 }
 
 function buildFilterUI(allModels) {
@@ -1285,6 +1418,7 @@ function applyFilter() {
   renderProjectChart(byProject);
   renderCostBreakdown(costTotals);
   lastFilteredSessions = sortSessions(filteredSessions);
+  lastByModel = byModel;
   lastByProject = sortProjects(byProject);
   lastByProjectBranch = sortProjectBranch(byProjectBranch);
   lastByTool = byTool;
@@ -1306,7 +1440,7 @@ function renderStats(t) {
     { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, May 2026', color: '#4ade80' },
+    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, May 2026', color: C.green },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">
@@ -1365,10 +1499,11 @@ function renderHourlyChart(agg) {
   const ctx = document.getElementById('chart-hourly').getContext('2d');
   if (charts.hourly) charts.hourly.destroy();
 
-  const labels = agg.hours.map(h => (h.peak ? '⚡ ' : '') + formatHourLabel(h.hour));
+  const labels = agg.hours.map(h => formatHourLabel(h.hour));
   const turns  = agg.hours.map(h => h.avgTurns);
   const output = agg.hours.map(h => h.avgOutput);
-  const barColors = agg.hours.map(h => h.peak ? 'rgba(248,113,113,0.8)' : TOKEN_COLORS.input);
+  const barColors      = agg.hours.map(h => h.peak ? 'rgba(199,78,57,0.9)' : TOKEN_COLORS.input);
+  const barHoverColors = agg.hours.map(h => h.peak ? 'rgba(199,78,57,1)'   : TOKEN_HOVER.input);
 
   charts.hourly = new Chart(ctx, {
     data: {
@@ -1377,19 +1512,28 @@ function renderHourlyChart(agg) {
         {
           type: 'bar',
           label: 'Avg turns / hour',
+          hidden: hiddenSeries.hourly.has('Avg turns / hour'),
           data: turns,
           backgroundColor: barColors,
+          hoverBackgroundColor: barHoverColors,
+          pointStyle: 'rect',
           yAxisID: 'y',
           order: 2,
         },
         {
           type: 'line',
           label: 'Avg output tokens / hour',
+          hidden: hiddenSeries.hourly.has('Avg output tokens / hour'),
           data: output,
           borderColor: TOKEN_COLORS.output,
-          backgroundColor: 'rgba(167,139,250,0.15)',
+          backgroundColor: 'rgba(217,119,87,0.15)',
           borderWidth: 2,
           pointRadius: 2,
+          pointHoverRadius: 4,
+          pointHoverBackgroundColor: TOKEN_HOVER.output,
+          pointStyle: 'circle',
+          pointBackgroundColor: TOKEN_COLORS.output,
+          pointBorderColor: TOKEN_COLORS.output,
           tension: 0.3,
           yAxisID: 'y1',
           order: 1,
@@ -1397,11 +1541,12 @@ function renderHourlyChart(agg) {
       ]
     },
     options: {
-      responsive: true, maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false, resizeDelay: 150,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        legend: { onClick: legendToggle('hourly'), labels: { color: C.axis, usePointStyle: true, boxWidth: 8, boxHeight: 8 } },
         tooltip: {
+          usePointStyle: true,
           callbacks: {
             title: (items) => {
               if (!items.length) return '';
@@ -1420,9 +1565,9 @@ function renderHourlyChart(agg) {
         },
       },
       scales: {
-        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: 'Avg turns / hour',         color: '#8892a4', font: { size: 11 } } },
-        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: '#8892a4', font: { size: 11 } } },
+        x: { ticks: { color: C.axis, maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: C.border } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: C.axis, callback: v => v.toFixed(1) },     grid: { color: C.border }, title: { display: true, text: 'Avg turns / hour',         color: C.axis, font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: C.axis, callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: C.axis, font: { size: 11 } } },
       }
     }
   });
@@ -1436,19 +1581,19 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
+        { label: 'Input',          hidden: hiddenSeries.daily.has('Input'),          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'io',    yAxisID: 'y1' },
+        { label: 'Output',         hidden: hiddenSeries.daily.has('Output'),         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'io',    yAxisID: 'y1' },
+        { label: 'Cache Read',     hidden: hiddenSeries.daily.has('Cache Read'),     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'cache', yAxisID: 'y' },
+        { label: 'Cache Creation', hidden: hiddenSeries.daily.has('Cache Creation'), data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'cache', yAxisID: 'y' },
       ]
     },
     options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: { legend: { onClick: legendToggle('daily'), labels: { color: C.axis, boxWidth: 12 } } },
       scales: {
-        x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: 'Cache', color: '#74de80' } },
-        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: '#4f8ef7' } },
+        x: { ticks: { color: C.axis, maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: C.border } },
+        y:  { position: 'left',  ticks: { color: C.green, callback: v => fmt(v) }, grid: { color: C.border }, title: { display: true, text: 'Cache', color: C.green } },
+        y1: { position: 'right', ticks: { color: C.blue, callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: C.blue } },
       }
     }
   });
@@ -1462,16 +1607,31 @@ function renderModelChart(byModel) {
     type: 'doughnut',
     data: {
       labels: byModel.map(m => m.model),
-      datasets: [{ data: byModel.map(m => m.input + m.output), backgroundColor: MODEL_COLORS, borderWidth: 2, borderColor: '#1a1d27' }]
+      datasets: [{ data: byModel.map(m => m.input + m.output), backgroundColor: MODEL_COLORS, hoverBackgroundColor: MODEL_COLORS, hoverOffset: 8, borderWidth: 2, borderColor: C.card, hoverBorderColor: C.card }]
     },
     options: {
-      responsive: true, maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false, resizeDelay: 150,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
+        legend: {
+          position: 'bottom',
+          labels: { color: C.axis, boxWidth: 12, font: { size: 11 } },
+          onClick: (e, item, legend) => {
+            const ci = legend.chart;
+            ci.toggleDataVisibility(item.index);
+            const label = ci.data.labels[item.index];
+            if (!ci.getDataVisibility(item.index)) hiddenSeries.model.add(label); else hiddenSeries.model.delete(label);
+            ci.update();
+          },
+        },
         tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
       }
     }
   });
+  // Reapply any slices the user toggled off in a previous render.
+  byModel.forEach((m, i) => {
+    if (hiddenSeries.model.has(m.model) && charts.model.getDataVisibility(i)) charts.model.toggleDataVisibility(i);
+  });
+  charts.model.update();
 }
 
 function renderProjectChart(byProject) {
@@ -1484,23 +1644,67 @@ function renderProjectChart(byProject) {
     data: {
       labels: top.map(p => p.project.length > 22 ? '\u2026' + p.project.slice(-20) : p.project),
       datasets: [
-        { label: 'Input',  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
-        { label: 'Output', data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
+        { label: 'Input',  hidden: hiddenSeries.project.has('Input'),  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input,  hoverBackgroundColor: TOKEN_HOVER.input },
+        { label: 'Output', hidden: hiddenSeries.project.has('Output'), data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output, hoverBackgroundColor: TOKEN_HOVER.output },
       ]
     },
     options: {
-      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: { legend: { onClick: legendToggle('project'), labels: { color: C.axis, boxWidth: 12 } } },
       scales: {
-        x: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+        x: { ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border } },
+        y: { ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
       }
     }
   });
 }
 
+// Fills a table card's footer with the row-reveal control. Three states:
+//   - more rows fit under the cap        -> "Show more" (plus "Show less" once expanded)
+//   - cap reached but more records exist -> "Download CSV to see all (N)" + "Show less"
+//   - every row is already visible       -> "Show less"
+// "Show less" is hidden at the initial step (nothing to collapse yet). Renders
+// nothing when the whole table fits in the first step. Carets: more = down (▾),
+// less = up (▴).
+function renderTableToggle(footId, total, limit, lessName, moreName, csvName) {
+  const foot = document.getElementById(footId);
+  if (!foot) return;
+  if (total <= TABLE_STEPS[0]) { foot.innerHTML = ''; return; }
+  const less = '<button class="show-more-btn" onclick="' + lessName + '()">Show less ▴</button>';
+  const more = '<button class="show-more-btn" onclick="' + moreName + '()">Show more ▾</button>';
+  let html;
+  if (limit < total && limit < TABLE_MAX) {
+    // more rows fit under the cap; Show less only once we're past the first step
+    html = (limit > TABLE_STEPS[0] ? less : '') + more;
+  } else if (limit < total) {           // cap reached, remaining rows only via CSV
+    html = '<a class="show-more-link" href="#" onclick="' + csvName + '(); return false;">Download CSV to see all (' + total + ')</a>' + less;
+  } else {                              // everything already visible
+    html = less;
+  }
+  foot.innerHTML = html;
+}
+
+// After collapsing a table, bring its top back into view — the user may have
+// scrolled down through the expanded rows.
+function scrollTableToTop(bodyId) {
+  const card = document.getElementById(bodyId)?.closest('.table-card');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// "Show more" advances one step (capped at TABLE_MAX); "Show less" resets to 10
+// and scrolls back to the top of that table.
+function moreModelRows()   { modelLimit    = nextTableLimit(modelLimit,    lastByModel.length);        renderModelCostTable(lastByModel); }
+function lessModelRows()   { modelLimit    = TABLE_STEPS[0]; renderModelCostTable(lastByModel);            scrollTableToTop('model-cost-body'); }
+function moreSessionRows() { sessionsLimit = nextTableLimit(sessionsLimit, lastFilteredSessions.length); renderSessionsTable(lastFilteredSessions); }
+function lessSessionRows() { sessionsLimit = TABLE_STEPS[0]; renderSessionsTable(lastFilteredSessions);    scrollTableToTop('sessions-body'); }
+function moreProjectRows() { projectLimit  = nextTableLimit(projectLimit,  lastByProject.length);       renderProjectCostTable(lastByProject); }
+function lessProjectRows() { projectLimit  = TABLE_STEPS[0]; renderProjectCostTable(lastByProject);        scrollTableToTop('project-cost-body'); }
+function moreBranchRows()  { branchLimit   = nextTableLimit(branchLimit,   lastByProjectBranch.length); renderProjectBranchCostTable(lastByProjectBranch); }
+function lessBranchRows()  { branchLimit   = TABLE_STEPS[0]; renderProjectBranchCostTable(lastByProjectBranch); scrollTableToTop('project-branch-cost-body'); }
+
 function renderSessionsTable(sessions) {
-  document.getElementById('sessions-body').innerHTML = sessions.map(s => {
+  const shown = sessions.slice(0, sessionsLimit);
+  document.getElementById('sessions-body').innerHTML = shown.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
@@ -1519,6 +1723,7 @@ function renderSessionsTable(sessions) {
       ${costCell}
     </tr>`;
   }).join('');
+  renderTableToggle('sessions-foot', sessions.length, sessionsLimit, 'lessSessionRows', 'moreSessionRows', 'exportSessionsCSV');
 }
 
 function renderToolCostTable(rows) {
@@ -1803,7 +2008,9 @@ function sortModels(byModel) {
 }
 
 function renderModelCostTable(byModel) {
-  document.getElementById('model-cost-body').innerHTML = sortModels(byModel).map(m => {
+  const sorted = sortModels(byModel);
+  const shown = sorted.slice(0, modelLimit);
+  document.getElementById('model-cost-body').innerHTML = shown.map(m => {
     const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
     const costCell = isBillable(m.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
@@ -1818,6 +2025,7 @@ function renderModelCostTable(byModel) {
       ${costCell}
     </tr>`;
   }).join('');
+  renderTableToggle('model-cost-foot', sorted.length, modelLimit, 'lessModelRows', 'moreModelRows', 'exportModelCSV');
 }
 
 // ── Project cost table sorting ────────────────────────────────────────────
@@ -1849,7 +2057,9 @@ function sortProjects(byProject) {
 }
 
 function renderProjectCostTable(byProject) {
-  document.getElementById('project-cost-body').innerHTML = sortProjects(byProject).map(p => {
+  const sorted = sortProjects(byProject);
+  const shown = sorted.slice(0, projectLimit);
+  document.getElementById('project-cost-body').innerHTML = shown.map(p => {
     return `<tr>
       <td>${esc(p.project)}</td>
       <td class="num">${p.sessions}</td>
@@ -1859,6 +2069,7 @@ function renderProjectCostTable(byProject) {
       <td class="cost">${fmtCost(p.cost)}</td>
     </tr>`;
   }).join('');
+  renderTableToggle('project-cost-foot', sorted.length, projectLimit, 'lessProjectRows', 'moreProjectRows', 'exportProjectsCSV');
 }
 
 // ── Project+Branch cost table sorting ────────────────────────────────────
@@ -1894,7 +2105,9 @@ function sortProjectBranch(rows) {
 }
 
 function renderProjectBranchCostTable(rows) {
-  document.getElementById('project-branch-cost-body').innerHTML = sortProjectBranch(rows).map(pb => {
+  const sorted = sortProjectBranch(rows);
+  const shown = sorted.slice(0, branchLimit);
+  document.getElementById('project-branch-cost-body').innerHTML = shown.map(pb => {
     return `<tr>
       <td>${esc(pb.project)}</td>
       <td class="muted" style="font-family:monospace">${esc(pb.branch || '\u2014')}</td>
@@ -1905,6 +2118,7 @@ function renderProjectBranchCostTable(rows) {
       <td class="cost">${fmtCost(pb.cost)}</td>
     </tr>`;
   }).join('');
+  renderTableToggle('project-branch-cost-foot', sorted.length, branchLimit, 'lessBranchRows', 'moreBranchRows', 'exportProjectBranchCSV');
 }
 
 // ── CSV Export ────────────────────────────────────────────────────────────
@@ -1933,6 +2147,15 @@ function downloadCSV(reportType, header, rows) {
   a.download = reportType + '_' + csvTimestamp() + '.csv';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function exportModelCSV() {
+  const header = ['Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const rows = sortModels(lastByModel).map(m => {
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    return [m.model, m.turns, m.input, m.output, m.cache_read, m.cache_creation, cost.toFixed(4)];
+  });
+  downloadCSV('cost_by_model', header, rows);
 }
 
 function exportSessionsCSV() {
@@ -1993,11 +2216,11 @@ async function loadData() {
     const resp = await fetch('/api/data');
     const d = await resp.json();
     if (d.error) {
-      document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
+      document.body.innerHTML = '<div style="padding:40px;color:#C74E39">' + esc(d.error) + '</div>';
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? ' \u00b7 Auto-refresh in 30s' : '';
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + refreshNote;
+    const refreshNote = rangeIncludesToday(selectedRange) ? '<br>Auto-refresh in 30s' : '';
+    document.getElementById('meta').innerHTML = 'Updated: ' + esc(d.generated_at) + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -2050,6 +2273,16 @@ scheduleAutoRefresh();
 """
 
 
+def find_icon_file():
+    """Locate the header icon.svg (repo-root ``resources/icon.svg``).
+
+    Returns the path, or ``None`` so the /icon.svg route can 404 gracefully
+    (the header ``<img>`` then just renders empty alt text).
+    """
+    candidate = Path(__file__).resolve().parent / "resources" / "icon.svg"
+    return candidate if candidate.is_file() else None
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -2061,6 +2294,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        # self.path includes the query string, but every URL the UI emits has
+        # one (e.g. "/?range=all"); compare the bare path so bookmarkable
+        # URLs don't fall through to 404.
         parsed = urlparse(self.path)
         path = parsed.path
         if path in ("/", "/index.html"):
@@ -2089,13 +2325,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        elif path == "/icon.svg":
+            icon = find_icon_file()
+            if icon is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = icon.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(body)
+
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/rescan":
+        path = urlparse(self.path).path
+        if path == "/api/rescan":
             # Full rebuild: delete DB and rescan from scratch.
             # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
             # patch the module globals are honored (scan's defaults are
