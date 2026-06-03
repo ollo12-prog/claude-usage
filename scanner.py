@@ -100,6 +100,7 @@ def init_db(conn):
         "inference_geo": "TEXT",
         "is_sidechain": "INTEGER DEFAULT 0",
         "is_compact_summary": "INTEGER DEFAULT 0",
+        "tool_calls": "TEXT",
     }
     for col, spec in migrations.items():
         if col not in existing_cols:
@@ -110,6 +111,21 @@ def init_db(conn):
         ON turns(message_id) WHERE message_id IS NOT NULL AND message_id != ''
     """)
     conn.commit()
+
+
+def extract_tool_calls(content):
+    """Return a list of {name, input} dicts for every tool_use block in a
+    message's content list. Captures *all* tool calls in a turn (an assistant
+    message can fire several at once), preserving each call's full input."""
+    calls = []
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                calls.append({
+                    "name": item.get("name"),
+                    "input": item.get("input") or {},
+                })
+    return calls
 
 
 def project_name_from_cwd(cwd):
@@ -197,12 +213,9 @@ def parse_jsonl_file(filepath):
                     if input_tokens + output_tokens + cache_read + cache_creation == 0:
                         continue
 
-                    # Extract tool name from content if present
-                    tool_name = None
-                    for item in msg.get("content", []):
-                        if isinstance(item, dict) and item.get("type") == "tool_use":
-                            tool_name = item.get("name")
-                            break
+                    # Extract every tool call in this turn (with full inputs)
+                    tool_calls = extract_tool_calls(msg.get("content", []))
+                    tool_name = tool_calls[0]["name"] if tool_calls else None
 
                     if model:
                         session_meta[session_id]["model"] = model
@@ -226,6 +239,7 @@ def parse_jsonl_file(filepath):
                         "inference_geo": usage.get("inference_geo", "") or "",
                         "is_sidechain": 1 if record.get("isSidechain") else 0,
                         "is_compact_summary": 1 if record.get("isCompactSummary") else 0,
+                        "tool_calls": json.dumps(tool_calls) if tool_calls else None,
                     }
 
                     # Dedup: last record per message_id wins (final usage tallies)
@@ -340,8 +354,9 @@ def insert_turns(conn, turns):
              cache_read_tokens, cache_creation_tokens,
              cache_creation_5m_tokens, cache_creation_1h_tokens,
              tool_name, cwd, message_id, duration_ms, stop_reason,
-             service_tier, inference_geo, is_sidechain, is_compact_summary)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             service_tier, inference_geo, is_sidechain, is_compact_summary,
+             tool_calls)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
@@ -350,7 +365,8 @@ def insert_turns(conn, turns):
          t["tool_name"], t["cwd"], t.get("message_id", ""),
          t.get("duration_ms", 0), t.get("stop_reason", ""),
          t.get("service_tier", ""), t.get("inference_geo", ""),
-         t.get("is_sidechain", 0), t.get("is_compact_summary", 0))
+         t.get("is_sidechain", 0), t.get("is_compact_summary", 0),
+         t.get("tool_calls"))
         for t in turns
     ])
 
@@ -480,11 +496,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             if input_tokens + output_tokens + cache_read + cache_creation == 0:
                                 continue
 
-                            tool_name = None
-                            for item in msg.get("content", []):
-                                if isinstance(item, dict) and item.get("type") == "tool_use":
-                                    tool_name = item.get("name")
-                                    break
+                            tool_calls = extract_tool_calls(msg.get("content", []))
+                            tool_name = tool_calls[0]["name"] if tool_calls else None
 
                             if model:
                                 new_session_metas[session_id]["model"] = model

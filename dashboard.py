@@ -203,6 +203,7 @@ def get_session_detail(session_id, db_path=DB_PATH):
             {turn_expr('inference_geo', "''")},
             {turn_expr('is_sidechain', '0')},
             {turn_expr('is_compact_summary', '0')},
+            {turn_expr('tool_calls', 'NULL')},
             COALESCE(tool_name, '<none>') as tool_name,
             cwd
         FROM turns
@@ -249,6 +250,7 @@ def get_session_detail(session_id, db_path=DB_PATH):
             "is_sidechain":   bool(r["is_sidechain"]),
             "is_compact_summary": bool(r["is_compact_summary"]),
             "tool":           r["tool_name"],
+            "tool_calls":     json.loads(r["tool_calls"]) if r["tool_calls"] else [],
             "cwd":            r["cwd"] or "",
         } for r in turns],
     }
@@ -345,6 +347,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
   .link-btn { background: transparent; border: none; color: var(--blue); cursor: pointer; font: inherit; padding: 0; }
   .link-btn:hover { text-decoration: underline; }
+  .tool-detail-link { margin-left: 8px; font-size: 11px; color: var(--muted); }
+  .tool-detail-link:hover { color: var(--blue); }
+  .tool-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 90; }
+  .tool-overlay.hidden, .tool-panel.hidden { display: none; }
+  .tool-panel { position: fixed; top: 0; right: 0; width: min(620px, 94vw); height: 100vh; background: var(--card);
+                border-left: 1px solid var(--border); z-index: 100; display: flex; flex-direction: column;
+                box-shadow: -10px 0 30px rgba(0,0,0,0.5); }
+  .tool-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px;
+                     border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+  .tool-panel-head .title { font-size: 13px; font-weight: 600; }
+  .tool-panel-head .sub { font-size: 11px; color: var(--muted); }
+  .tool-panel-body { padding: 16px 18px; overflow-y: auto; flex: 1 1 auto; }
+  .tool-call-block { margin-bottom: 20px; }
+  .tool-call-block h4 { font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .tool-call-block .field { font-size: 11px; color: var(--muted); margin: 8px 0 3px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .tool-call-block pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+                         font-family: monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+                         word-break: break-word; max-height: 60vh; overflow: auto; }
   .session-filter-bar { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr) 100px auto auto; gap: 10px; align-items: end; margin-bottom: 14px; }
   .filter-field label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px; }
   .filter-field input, .filter-field select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 6px 8px; font: inherit; font-size: 12px; }
@@ -634,6 +654,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </table>
   </div>
 </main>
+
+<div id="tool-detail-overlay" class="tool-overlay hidden" onclick="closeToolPanel()"></div>
+<aside id="tool-detail-panel" class="tool-panel hidden">
+  <div class="tool-panel-head">
+    <div>
+      <div class="title" id="tool-panel-title">Tool calls</div>
+      <div class="sub" id="tool-panel-sub"></div>
+    </div>
+    <button class="export-btn" onclick="closeToolPanel()" title="Close">&#x2715; Close</button>
+  </div>
+  <div class="tool-panel-body" id="tool-panel-body"></div>
+</aside>
 
 <footer>
   <div class="footer-content">
@@ -1518,6 +1550,78 @@ function renderSessionSignalsTable(rows) {
   }).join('');
 }
 
+// ── Tool call detail (compact summary + slide-in panel) ─────────────────────
+function toolTruncate(s, n) {
+  s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+function toolBaseName(p) {
+  if (!p) return '';
+  return String(p).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+}
+// Compact one-line label for a single tool call: "Bash: git status", "Skill: humanizer", …
+function toolCallSummary(tc) {
+  const name = tc.name || 'tool';
+  const inp = tc.input || {};
+  switch (name) {
+    case 'Bash':
+    case 'PowerShell':  return name + ': ' + toolTruncate(inp.description || inp.command, 64);
+    case 'Skill':       return 'Skill: ' + (inp.skill || '?') + (inp.args ? ' ' + toolTruncate(inp.args, 30) : '');
+    case 'Read':        return 'Read: ' + toolBaseName(inp.file_path);
+    case 'Write':       return 'Write: ' + toolBaseName(inp.file_path);
+    case 'Edit':        return 'Edit: ' + toolBaseName(inp.file_path);
+    case 'NotebookEdit':return 'NotebookEdit: ' + toolBaseName(inp.notebook_path || inp.file_path);
+    case 'Grep':        return 'Grep: ' + toolTruncate(inp.pattern, 44);
+    case 'Glob':        return 'Glob: ' + toolTruncate(inp.pattern, 44);
+    case 'Agent':       return 'Agent: ' + (inp.subagent_type || toolTruncate(inp.description, 30));
+    case 'WebSearch':   return 'WebSearch: ' + toolTruncate(inp.query, 44);
+    case 'WebFetch':    return 'WebFetch: ' + toolTruncate(inp.url, 44);
+    case 'Task':        return 'Task: ' + toolTruncate(inp.subject || inp.description, 40);
+    case 'ToolSearch':  return 'ToolSearch: ' + toolTruncate(inp.query, 40);
+    default:
+      if (name.indexOf('mcp__') === 0) {
+        const parts = name.split('__');
+        return 'mcp/' + parts[parts.length - 1];
+      }
+      return name;
+  }
+}
+// Table cell: compact summary of all tool calls in the turn + a "details" link.
+function toolCellHTML(t, i) {
+  const calls = t.tool_calls || [];
+  if (!calls.length) return esc(t.tool || '<none>');
+  let label = toolCallSummary(calls[0]);
+  if (calls.length > 1) label += ' +' + (calls.length - 1);
+  return esc(label) +
+    ` <button class="link-btn tool-detail-link" onclick="openToolPanel(${i})" title="Show full tool inputs">details</button>`;
+}
+function openToolPanel(i) {
+  const t = (selectedSessionDetail && selectedSessionDetail.turns) ? selectedSessionDetail.turns[i] : null;
+  if (!t) return;
+  const calls = t.tool_calls || [];
+  document.getElementById('tool-panel-title').textContent =
+    calls.length + (calls.length === 1 ? ' tool call' : ' tool calls');
+  document.getElementById('tool-panel-sub').textContent = (t.timestamp || '') + (t.model ? ' · ' + t.model : '');
+  document.getElementById('tool-panel-body').innerHTML = calls.map(tc => {
+    let body = '';
+    const inp = tc.input || {};
+    if ((tc.name === 'Bash' || tc.name === 'PowerShell') && inp.command) {
+      if (inp.description) body += `<div class="field">Description</div><pre>${esc(inp.description)}</pre>`;
+      body += `<div class="field">Command</div><pre>${esc(inp.command)}</pre>`;
+    } else {
+      body = `<pre>${esc(JSON.stringify(inp, null, 2))}</pre>`;
+    }
+    return `<div class="tool-call-block"><h4>${esc(tc.name || 'tool')}</h4>${body}</div>`;
+  }).join('') || '<p class="muted">No tool inputs recorded for this turn.</p>';
+  document.getElementById('tool-detail-overlay').classList.remove('hidden');
+  document.getElementById('tool-detail-panel').classList.remove('hidden');
+}
+function closeToolPanel() {
+  document.getElementById('tool-detail-overlay').classList.add('hidden');
+  document.getElementById('tool-detail-panel').classList.add('hidden');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeToolPanel(); });
+
 function renderSessionDetail(d) {
   selectedSessionDetail = d;
   const s = d.session;
@@ -1539,11 +1643,11 @@ function renderSessionDetail(d) {
     ['Cache Share', fmtPct(promptTokens ? ((s.cache_read || 0) + (s.cache_creation || 0)) / promptTokens : 0)],
     ['Cache Savings', fmtCost(c.cache_savings)],
   ].map(([label, value]) => `<div class="detail-stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join('');
-  document.getElementById('session-detail-body').innerHTML = d.turns.map(t => {
+  document.getElementById('session-detail-body').innerHTML = d.turns.map((t, i) => {
     const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
     return `<tr>
       <td class="muted">${esc(t.timestamp)}</td>
-      <td>${esc(t.tool)}</td>
+      <td>${toolCellHTML(t, i)}</td>
       <td><span class="model-tag">${esc(t.model)}</span></td>
       <td class="num">${fmt(t.input)}</td>
       <td class="num">${fmt(t.output)}</td>
