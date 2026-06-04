@@ -48,14 +48,14 @@ After install, the `claude-usage` command is on your `PATH` and accepts the same
 
 ### macOS / Linux (clone)
 ```
-git clone https://github.com/phuryn/claude-usage
+git clone https://github.com/ollo12-prog/claude-usage
 cd claude-usage
 python3 cli.py dashboard
 ```
 
 ### Windows
 ```
-git clone https://github.com/phuryn/claude-usage
+git clone https://github.com/ollo12-prog/claude-usage
 cd claude-usage
 python cli.py dashboard
 ```
