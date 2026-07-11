@@ -2,12 +2,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![claude-code](https://img.shields.io/badge/claude--code-black?style=flat-square)](https://claude.ai/code)
+[![Companion: burnstop](https://img.shields.io/badge/companion-burnstop-blue?style=flat-square)](https://github.com/phuryn/burnstop)
 
 **Pro and Max subscribers get a progress bar. This gives you the full picture.**
 
 Claude Code writes detailed usage logs locally — token counts, models, sessions, projects — regardless of your plan. This dashboard reads those logs and turns them into charts and cost estimates. Works on API, Pro, and Max plans.
 
 ![Claude Usage Dashboard](docs/screenshot.png)
+
+Available as a **web app** (`python cli.py dashboard`).
 
 **Created by:** [The Product Compass Newsletter](https://www.productcompass.pm)
 
@@ -40,11 +43,22 @@ No `pip install`, no virtual environment, no build step.
 
 ### macOS / Linux (Homebrew)
 ```
-brew install --formula https://raw.githubusercontent.com/phuryn/claude-usage/main/Formula/claude-usage.rb
+brew tap phuryn/claude-usage https://github.com/phuryn/claude-usage
+brew install phuryn/claude-usage/claude-usage
 claude-usage dashboard
 ```
 
+> Homebrew has disabled installing a formula from an arbitrary raw URL, so tap the repo first (thanks @adrianlungu for the working incantation in #46).
+
 After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
+
+### Any OS (uv tool / pipx)
+```
+uv tool install git+https://github.com/phuryn/claude-usage
+claude-usage dashboard
+```
+
+Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/phuryn/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps (#144).
 
 ### macOS / Linux (clone)
 ```
@@ -60,6 +74,18 @@ cd claude-usage
 python cli.py dashboard
 ```
 
+### Docker
+```
+git clone https://github.com/phuryn/claude-usage
+cd claude-usage
+bash scripts/run-docker.sh
+```
+
+Opens the dashboard at **http://localhost:9898**.
+
+The script builds the image, then runs the container with:
+- `~/.claude` mounted **read-only** — the container can read your transcripts but cannot modify them
+- A named Docker volume (`claude-usage-data`) for the SQLite database — persisted across restarts, isolated from your home directory
 
 ---
 
@@ -83,7 +109,10 @@ python cli.py stats
 # Scan + open browser dashboard at http://localhost:8080
 python cli.py dashboard
 
-# Custom host and port via environment variables
+# Custom host and port
+python cli.py dashboard --host 0.0.0.0 --port 9000
+
+# Environment variables are also supported
 HOST=0.0.0.0 PORT=9000 python cli.py dashboard
 
 # Scan a custom projects directory
@@ -107,18 +136,20 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 `scanner.py` parses those files and stores the data in a SQLite database at `~/.claude/usage.db`.
 
-`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering with bookmarkable URLs. The bind address and port can be overridden with `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
+`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering and a date-range dropdown with bookmarkable URLs. A sticky section nav jumps between sections, and every chart/table can be collapsed (remembered across reloads). The bind address and port can be configured with the `--host` and `--port` flags, or the `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
 
 ---
 
 ## Cost estimates
 
-Costs are calculated using **Anthropic API pricing as of May 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
+Costs are calculated using **Anthropic API pricing as of June 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
 
-**Only models whose name contains `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
+**Only models whose name contains `fable`, `mythos`, `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
 
 | Model | Input | Output | Cache Write | Cache Read |
 |-------|-------|--------|------------|-----------|
+| claude-fable-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
+| claude-mythos-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
 | claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
@@ -136,4 +167,6 @@ Costs are calculated using **Anthropic API pricing as of May 2026** ([claude.com
 | `scanner.py` | Parses JSONL transcripts, writes to `~/.claude/usage.db` |
 | `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
 | `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
-| `Formula/claude-usage.rb` | Homebrew formula — install with `brew install --formula <raw-url>` |
+| `Formula/claude-usage.rb` | Homebrew formula — install with `brew tap phuryn/claude-usage` then `brew install phuryn/claude-usage/claude-usage` |
+| `Dockerfile` | Container image definition |
+| `scripts/run-docker.sh` | Build and run the dashboard in Docker with a read-only `~/.claude` mount |

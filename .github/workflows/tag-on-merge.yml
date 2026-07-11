@@ -1,14 +1,17 @@
-name: Auto-tag releases from CHANGELOG
+name: Tag and release from CHANGELOG
 
 # Runs after each push to main. If CHANGELOG.md gained a new ## vX.Y.Z heading
-# anywhere in this push's commit range (compared to the push's `before` SHA),
-# create a lightweight tag with that version name pointing at the pushed
-# commit. CHANGELOG is the source of truth; tags are a deterministic
-# projection of it.
+# anywhere in this push's commit range (compared to the push's `before` SHA):
+#   1. create a lightweight tag with that version name at the pushed commit, and
+#   2. publish a GitHub Release for that tag with the matching CHANGELOG section
+#      as the notes.
 #
-# No action when CHANGELOG wasn't touched, no action when an existing version
-# heading was edited (not added), no action when the resulting tag already
-# exists. So this is safe to re-run on force-pushes and amends.
+# CHANGELOG is the source of truth; the tag and the Release are deterministic
+# projections of it.
+#
+# No action when CHANGELOG wasn't touched, when an existing version heading was
+# edited (not added), or when the tag/release already exists. Safe to re-run on
+# force-pushes and amends.
 
 on:
   push:
@@ -22,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Need enough history to diff the whole push range (`before..after`)
           # not just the tip commit. fetch-depth: 0 = full clone; small repo,
@@ -91,3 +94,39 @@ jobs:
           git tag "$VERSION"
           git push origin "$VERSION"
           echo "Tagged $VERSION at $(git rev-parse HEAD)."
+
+      # ── Release: publish a GitHub Release from the CHANGELOG section ─────────
+      # Gated on a new version being detected, so ordinary pushes to main
+      # (docs, typo fixes) incur no release cost.
+
+      - name: Create GitHub Release
+        if: steps.detect.outputs.version != ''
+        env:
+          VERSION: ${{ steps.detect.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent: a re-push of the same release commit shouldn't error.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; nothing to do."
+            exit 0
+          fi
+
+          # Extract this version's CHANGELOG section (heading through the line
+          # before the next `## vX` heading) as the release notes. $2 is the
+          # version token: `## v1.2.5 — 2026-06-15` → $2 == "v1.2.5".
+          notes="$(mktemp)"
+          awk -v ver="$VERSION" '
+            /^## v[0-9]/ { if (started) exit; if ($2 == ver) started=1 }
+            started { print }
+          ' CHANGELOG.md > "$notes"
+          if [ ! -s "$notes" ]; then
+            echo "::error::No '## $VERSION' section found in CHANGELOG.md."
+            exit 1
+          fi
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file "$notes"
+          echo "Released $VERSION."

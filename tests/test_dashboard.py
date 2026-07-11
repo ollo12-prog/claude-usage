@@ -93,10 +93,13 @@ class TestGetDashboardData(unittest.TestCase):
         data = get_dashboard_data(db_path=Path("/nonexistent/path/usage.db"))
         self.assertIn("error", data)
 
-    def test_session_id_truncated(self):
+    def test_session_id_sent_in_full(self):
+        # The table displays an 8-char prefix (session_id), but the full value is
+        # sent as full_session_id for the drilldown link and CSV export.
         data = get_dashboard_data(db_path=self.db_path)
         session = data["sessions_all"][0]
-        self.assertEqual(len(session["session_id"]), 8)
+        self.assertEqual(session["full_session_id"], "sess-abc123")
+        self.assertEqual(session["session_id"], "sess-abc123"[:8])
 
     def test_session_duration_calculated(self):
         data = get_dashboard_data(db_path=self.db_path)
@@ -281,8 +284,8 @@ class TestDashboardHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Redirect DB_PATH + projects dirs to a tempdir so /api/rescan
-        # doesn't unlink the user's real ~/.claude/usage.db or scan their
-        # real transcript directory during tests.
+        # writes to a throwaway DB and scans a throwaway transcript dir
+        # instead of the user's real ~/.claude/usage.db and transcripts.
         import dashboard as _d
         import scanner as _s
         cls._tmpdir = tempfile.TemporaryDirectory()
@@ -362,6 +365,53 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertIn("updated", data)
             self.assertIn("skipped", data)
 
+    def test_api_rescan_is_non_destructive(self):
+        # Regression (#138): /api/rescan must NOT wipe the DB. usage.db is the
+        # only durable store of history once Claude Code prunes old transcripts
+        # (cleanupPeriodDays), so a rescan with nothing left on disk must keep
+        # the existing rows. Seed history that has no corresponding JSONL file
+        # (the projects dir is empty), rescan, and assert it survives.
+        import dashboard as _d
+        db_path = _d.DB_PATH
+        conn = get_db(db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "pruned-sess", "project_name": "user/oldproject",
+            "first_timestamp": "2026-01-01T09:00:00Z",
+            "last_timestamp": "2026-01-01T10:00:00Z",
+            "git_branch": "main", "model": "claude-opus-4-8",
+            "total_input_tokens": 1000, "total_output_tokens": 400,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 1,
+        }])
+        insert_turns(conn, [{
+            "session_id": "pruned-sess", "timestamp": "2026-01-01T09:30:00Z",
+            "model": "claude-opus-4-8", "input_tokens": 1000,
+            "output_tokens": 400, "cache_read_tokens": 0,
+            "cache_creation_tokens": 0, "tool_name": None, "cwd": "/tmp",
+            "message_id": "msg-pruned-1",
+        }])
+        conn.commit()
+        conn.close()
+
+        url = f"http://127.0.0.1:{self.port}/api/rescan"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            turn_count = conn.execute(
+                "SELECT COUNT(*) FROM turns WHERE session_id = 'pruned-sess'"
+            ).fetchone()[0]
+            sess_count = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE session_id = 'pruned-sess'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(turn_count, 1, "rescan must not delete existing turns")
+        self.assertEqual(sess_count, 1, "rescan must not delete existing sessions")
+
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:
@@ -369,6 +419,19 @@ class TestDashboardHTTP(unittest.TestCase):
             self.fail("Expected 404")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
+
+    def test_index_injects_app_config(self):
+        # do_GET must substitute the __APP_CONFIG_JSON__ placeholder with a real
+        # JSON object (version). The raw placeholder must never reach the
+        # browser, or window.APP_CONFIG would be a syntax error.
+        from scanner import VERSION
+        url = f"http://127.0.0.1:{self.port}/"
+        with urllib.request.urlopen(url) as resp:
+            body = resp.read().decode("utf-8")
+        self.assertNotIn("__APP_CONFIG_JSON__", body)
+        self.assertIn("window.APP_CONFIG =", body)
+        self.assertIn(VERSION, body)
+        self.assertIn(f'"version": "{VERSION}"', body)
 
 
 class TestHTMLTemplate(unittest.TestCase):
@@ -443,14 +506,30 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertNotIn("cutoff", HTML_TEMPLATE)
         self.assertIn("(!start || r.day >= start) && (!end || r.day <= end)", HTML_TEMPLATE)
 
-    def test_today_range_button_present(self):
-        """The 'Today' range button is wired into RANGE_LABELS, RANGE_TICKS,
-        getRangeBounds, and the filter-bar HTML."""
-        self.assertIn("data-range=\"today\"", HTML_TEMPLATE)
+    def test_today_range_option_present(self):
+        """The 'Today' range is wired into RANGE_LABELS, RANGE_TICKS,
+        getRangeBounds, and the filter-bar range dropdown."""
+        self.assertIn("<option value=\"today\">", HTML_TEMPLATE)
         self.assertIn("'today': 'Today'", HTML_TEMPLATE)
         self.assertIn("'today': 1", HTML_TEMPLATE)
         # Bounds case: today returns start === end === today's ISO date
         self.assertIn("range === 'today'", HTML_TEMPLATE)
+
+    def test_app_config_placeholder_present(self):
+        """The head carries the server-substituted config placeholder and the
+        footer carries the element + JS the version/update feature drives."""
+        self.assertIn("__APP_CONFIG_JSON__", HTML_TEMPLATE)
+        self.assertIn("window.APP_CONFIG", HTML_TEMPLATE)
+        self.assertIn('id="footer-meta"', HTML_TEMPLATE)
+        self.assertIn("function initFooterMeta(", HTML_TEMPLATE)
+        self.assertIn("function checkForUpdate(", HTML_TEMPLATE)
+
+    def test_update_check_points_at_fork(self):
+        """The GitHub update check hits the fork's public releases API (not
+        upstream's), and no VS Code marketplace promo survives in the footer."""
+        self.assertIn("api.github.com/repos/ollo12-prog/claude-usage/releases/latest", HTML_TEMPLATE)
+        self.assertNotIn("marketplace.visualstudio.com", HTML_TEMPLATE)
+        self.assertNotIn("Get the VS Code extension", HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):

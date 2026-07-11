@@ -1,5 +1,129 @@
 # Changelog
 
+## v1.5.5 — 2026-07-10
+
+### Dashboard
+
+- Added an **Est. Cost line overlay** to the Daily Token Usage chart — a legend-toggleable line on a dedicated right-hand axis, priced **per model before the daily aggregation** so multi-model days are costed correctly (#151, thanks @paulabenzar).
+- Fixed **"This Month"** (and the other calendar ranges) including the previous month's last day in UTC+ timezones: date-range bounds are now formatted from local calendar components instead of `toISOString()` (UTC). The same local-date helper is now used by `rangeIncludesToday`, so it can no longer disagree with the range bounds near UTC midnight (#151, thanks @paulabenzar).
+
+### Scanner / CLI
+
+- The `today`, `week`, and `stats` commands now run the idempotent schema migration when they open the database, so reading before the next `scan` no longer crashes with `sqlite3.OperationalError: no such column: is_subagent` on a database created before subagent tracking existed. The dashboard already did this; the CLI read path now matches (#153, thanks @iliaal).
+
+### Project / docs
+
+- Documented the `dashboard` command's `--host` / `--port` flags in the README and AGENTS.md — the flags already worked (and are shown in the built-in `USAGE` text) but only the `HOST` / `PORT` environment variables were documented (#150, thanks @subhamchbty).
+
+## v1.5.4 — 2026-07-01
+
+### Dashboard
+
+- Added a **Title** column to the Recent Sessions table (after Project) and its CSV export, showing Claude Code's own session title: a user-set `custom-title` takes priority over an AI-generated `ai-title`. Long titles wrap within the column (min width 160px). Sessions without a title record show a muted **Untitled** placeholder — there is no fallback to the first user message, so prompt text never leaks into the table (#147, thanks @arojunior).
+- The Recent Sessions **CSV export now includes full session IDs** (the table still shows the 8-char prefix for readability, but an 8-char prefix isn't useful in an export) (#147).
+
+### VS Code extension
+
+- The embedded dashboard now waits up to **20s** (was 10s) for the server to become ready on cold start — the one-time topic backfill can slow the first launch — and a failed start now offers a **Retry** button (both in the error notification and on the panel) instead of only pointing at the command palette (#147).
+
+### Scanner
+
+- The scanner now parses `custom-title` / `ai-title` transcript records into a new `sessions.topic` column (additive in-place migration; existing DBs upgrade without a rebuild). Titles are captured even when Claude Code appends them after the turns (picked up on the next incremental scan), and a title-only record can never create a token-less phantom session row (#147, thanks @arojunior).
+- On upgrading an existing database, the next scan runs a **one-time topic backfill**: it re-reads the title records already present in previously-scanned transcripts (which an incremental scan would otherwise skip) so old sessions get a Topic too, then records via a `schema_meta` flag that it's done so it never repeats. Only title records are read, so token totals are untouched (#147).
+
+## v1.5.3 — 2026-07-01
+
+### Packaging
+
+- Added a `pyproject.toml` so the tool installs with `uv tool install git+https://github.com/phuryn/claude-usage` (or `pipx install …`) — no clone needed (#144, thanks @jamesbraza). Packaging only: `[project.dependencies]` is empty so the tool stays stdlib-only at runtime, the version is read dynamically from `scanner.VERSION` (still the single source of truth), and the clone + `python cli.py` path is unchanged. The `cli.py` `__main__` block was lifted into a `main()` function to serve as the `claude-usage` console entry point.
+
+## v1.5.2 — 2026-07-01
+
+### Packaging
+
+- Bumped the Homebrew formula pin from v1.1.0's commit to the **v1.5.1** tag tarball, so `brew install` / `brew upgrade` now installs current sources instead of year-old ones. The in-tree formula must reference the *previous* release to keep its `sha256` computable (a self-pointing hash is uncomputable), so Homebrew tracks one release behind by design (#46).
+
+## v1.5.1 — 2026-07-01
+
+### Packaging
+
+- Fixed the Homebrew shim crashing at runtime with `python@3.13/bin/python3: No such file or directory`. Modern `python@3.x` kegs only ship the versioned `python3.13` in their `bin` (the unversioned `python3` symlink moved to `libexec/bin`), so the formula now execs `python3.13` directly (#46, thanks @adrianlungu and @Jeroendevr for reporting).
+- Fixed the Homebrew install instructions: Homebrew disabled installing a formula from an arbitrary raw URL, so the README now taps the repo first (`brew tap phuryn/claude-usage …` then `brew install phuryn/claude-usage/claude-usage`) (#46, thanks @adrianlungu).
+
+## v1.5.0 — 2026-06-21
+
+### Dashboard
+
+- Added a sticky **section nav** under the filters that teleports to any section and highlights where you currently are — much faster to navigate the long single-page report. It's three compact entries: **Overview**, plus **Graphs** and **Tables** menus that drop down their sections on hover (or keyboard focus).
+- Made every chart and table card **collapsible**: click its title to fold the whole section away (independent of the in-table Show more/less paging). Collapsed sections are remembered across reloads, so you can permanently hide the views you don't use.
+- Reworked table paging so small tables aren't paged pointlessly: a table with **12 rows or fewer now shows in full** (no "Show more" to reveal just a row or two). Larger tables start at 10 rows and page **10 → 25 → 50**, with **Show less** collapsing back to 10.
+- Replaced the date-range button row with a compact **dropdown** — the eight buttons wrapped badly in the narrow VS Code panel.
+- Fixed the embedded VS Code panel **losing its saved state on reload** (collapsed sections, the update-check cache): the extension now reuses the dashboard's port across launches when it's free, so the iframe's localStorage origin stays stable instead of changing every time.
+- Added subagent attribution views: a **Subagent Tokens by Type** stacked bar chart and a **Top Subagent Dispatches** table, plus a Subagent Tokens stat card. Dispatched Task/Agent subagents (and Claude Code's auto-compaction) are surfaced separately while remaining included in the overall totals; both respect the existing model + range filters. All dynamic values are escaped via `esc()` (#140, thanks @john988).
+- The **Top Subagent Dispatches** table now behaves like Recent Sessions: it pages with Show more / Show less and exports all filtered rows to CSV, and it was moved below the Cost by Model table. The full ranked set is now sent to the client (previously capped at 50 server-side). Its header explanation ("ranked by total tokens; unknown = …") was moved into a small **(i) tooltip** to declutter the title.
+- Fixed **Cost by Project & Branch** default ordering: it now sorts by cost (descending) like the other cost tables, instead of grouping alphabetically by project name. Project name is kept only as a tiebreaker, and column sorting now matches the sibling tables.
+- Fixed a crash on `/api/data` (`no such table: agents`) that could appear on the first dashboard load right after upgrading — the server serves before its background scan migrates the DB, so `get_dashboard_data` now migrates the schema on read (idempotent) before running the subagent queries.
+
+### Scanner / CLI
+
+- The scanner now attributes subagent usage: new `turns.is_subagent` / `turns.agent_id` columns and an `agents` dispatch table (additive, in-place migrations — existing DBs upgrade without a rebuild). Subagents are detected via `isSidechain` / `agentId` / a `subagents/` transcript path, and dispatch metadata (agent type, status, duration, tool-use count) is captured from the parent tool result (#140, thanks @john988).
+- `today` and `stats` now print subagent token + turn summaries (counted as a subset of the totals, not added on top) (#140, thanks @john988).
+
+### Packaging / docs
+
+- Added Docker support: a `Dockerfile` and `scripts/run-docker.sh` run the dashboard in a container with `~/.claude` mounted **read-only** and the SQLite DB in a named volume, isolated from your home directory. A new `CLAUDE_USAGE_DB` env var makes the DB path configurable at runtime (default unchanged: `~/.claude/usage.db`) (#143, thanks @RafikFarhad).
+
+## v1.4.0 — 2026-06-15
+
+### Dashboard
+
+- Redesigned the model filter as a single-line multi-select dropdown. The filter bar now shows a compact trigger that opens a panel grouping models by **Anthropic** vs **Other providers**, with the All / None actions moved inside the panel. This replaces the wrapping row of pills, which grew unwieldy as new model versions accumulated. The trigger summarises the selection: **All models**, **No models**, **All Anthropic** (every opus/sonnet/haiku/mythos/fable selected, the default view) — optionally **All Anthropic +N** when other providers are also on — or otherwise the first two model names plus a **+N** overflow. The default selection (billable models only) and `?models=` URL persistence are unchanged.
+
+## v1.3.0 — 2026-06-15
+
+### Dashboard
+
+- The footer now shows the running version, linked to its GitHub release tag, on both the standalone web dashboard and the embedded VS Code panel (#135).
+- The standalone web dashboard now promotes the VS Code extension in the footer and, when a newer release is available, shows an **Update to vX.Y.Z** link to the latest GitHub release. The embedded panel shows neither — VS Code updates the extension itself, so it only displays the version. The dashboard learns its surface from a new `--surface` flag the extension passes (`--surface vscode`).
+- **Version check / privacy:** to power the update link, the standalone web dashboard now makes one unauthenticated request to GitHub's public releases API (`api.github.com/repos/phuryn/claude-usage/releases/latest`), cached in the browser for 24 hours and fully fail-silent (offline, blocked, or rate-limited simply hides the link). It sends **none** of your usage data — only a plain GET for the latest release number. The embedded VS Code panel makes no such request. Your transcripts and usage data never leave your machine.
+
+### Scanner / CLI
+
+- Added a single source-of-truth `VERSION` constant (`scanner.VERSION`) surfaced via `python cli.py --version`. It stays in lockstep with the top CHANGELOG heading and the extension's `package.json` (a parity test enforces all three match).
+
+### Project / docs
+
+- Rewrote the extension's local-install instructions: a prebuilt `.vsix` is now downloadable from every GitHub Release (no build step), and the build-from-source section gives a Windows-correct invocation (`powershell -ExecutionPolicy Bypass -File scripts\install.ps1`) — running `.\scripts\install.ps1` from Git Bash or by double-clicking just opens it in an editor.
+
+## v1.2.6 — 2026-06-15
+
+### Dashboard
+
+- Added an explicit `claude-opus-4-8` entry to both pricing tables and pointed the generic `opus` fallback at it (was 4.7). 4.8 already costed correctly via the substring fallback — this guards against silent mis-costing if 4.8 is ever repriced, and keeps the catch-all on the newest Opus (#133, #134, thanks @Ninhache).
+- Added the `claude-fable-5`, `claude-mythos-5`, and `claude-opus-4-8` rows to the README cost table (they were already in the live CLI/dashboard tables) and listed `fable` / `mythos` in the README's "included models" note, so the docs match the code.
+- Unified the pricing "as of" date to **June 2026** everywhere — the dashboard footer, the in-chart cost sublabel, the pricing code comment, and the README were inconsistently labelled April/May.
+- Made the Rescan button non-destructive: `/api/rescan` now runs an incremental scan instead of deleting `usage.db` and rebuilding from scratch. `usage.db` is the only durable record of usage once Claude Code prunes old transcripts (`cleanupPeriodDays`), so the old wipe-and-rebuild could permanently lose history that was no longer on disk. The button stays (it's the only in-session way to ingest new turns); its tooltip now reflects the additive behaviour (#138, thanks @OtoGodfrey).
+
+### Project / docs
+
+- Bumped GitHub Actions to their Node 24-era major versions across all workflows (`actions/checkout@v5`, `actions/setup-node@v5`, `actions/setup-python@v6`, `actions/upload-artifact@v5`), ahead of GitHub forcing Node 24 on the runners (Node 20 actions are deprecated from 2026-06-16).
+
+## v1.2.5 — 2026-06-15
+
+### Scanner / CLI
+
+- `cli.py dashboard` now binds and serves the port *first*, then runs the scan in a background thread, instead of scanning before starting the server. A cold scan over a large `~/.claude/projects` backlog can take over a minute, and the VS Code extension kills the dashboard process if it doesn't answer `/api/data` within ~10s — so the server was being killed long before it ever bound. The dashboard now comes up immediately and fills in data as the background scan commits.
+
+### Dashboard
+
+- Added Fable and Mythos to the pricing tables (both CLI and dashboard), priced at 2× Opus (input $10 / output $50 / MTok; cache-read $1.00, cache-write $12.50). `claude-mythos-5` shares `claude-fable-5`'s pricing. They're now billable, sort above Opus in the model filter, and resolve via the keyword fallback (`fable` / `mythos`).
+- The "no data yet" path no longer wipes the page — on a fresh start the server serves before the initial scan creates the DB, so `/api/data` can briefly return an error. The dashboard now shows a non-destructive "retrying…" notice and re-polls until the background scan produces data.
+- Added `PRAGMA busy_timeout = 5000` to the dashboard's read connection so reads wait briefly for the background scan's write locks instead of raising "database is locked".
+
+### Packaging
+
+- The auto-tag workflow ([.github/workflows/tag-on-merge.yml](.github/workflows/tag-on-merge.yml)) now also publishes a **GitHub Release** for each new version: it builds the VS Code extension `.vsix` and attaches it to the release, using the matching CHANGELOG section as the release notes. Tags and releases are deterministic projections of the CHANGELOG. The release step asserts `vscode-extension/package.json`'s version matches the CHANGELOG heading and fails loudly otherwise, so the `.vsix` asset is always correctly labelled. Bumped the extension to 1.2.5.
+
 ## v1.2.4 — 2026-05-30
 
 ### Dashboard

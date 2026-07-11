@@ -21,8 +21,10 @@ python cli.py scan                  # incremental scan (fast on re-run)
 python cli.py today                 # today's usage by model
 python cli.py week                  # last 7 days, per-day + by-model
 python cli.py stats                 # all-time stats
-python cli.py dashboard             # scan + open http://localhost:8080
-python cli.py scan --projects-dir PATH    # scan a custom transcripts dir
+python cli.py dashboard                          # scan + open http://localhost:8080
+python cli.py dashboard --host 0.0.0.0 --port 9000
+python cli.py scan --projects-dir PATH           # scan a custom transcripts dir
+# or via env vars:
 HOST=0.0.0.0 PORT=9000 python cli.py dashboard
 
 python -m unittest discover -s tests -v             # full test suite (CI runs this)
@@ -84,6 +86,8 @@ Pricing is duplicated in two places that **must stay in sync**:
 
 The entire UI lives in `HTML_TEMPLATE` as a raw string. Chart.js is loaded from CDN.
 
+Client-side UI state (collapsed sections, the 24h update-check cache) is kept in **`localStorage`**, which is keyed by the page's origin — so a stable port keeps that state across reloads.
+
 ## Testing notes
 
 - `tests/test_scanner.py` and `tests/test_dashboard.py` use `tempfile.NamedTemporaryFile` for an isolated DB; never touch the user's real `~/.claude/usage.db`.
@@ -107,12 +111,14 @@ This applies to all agents working on this repo, not just Claude Code.
 
 The release flow:
 1. While work accumulates on `DEV`, the `## vX.Y.Z — TBD` heading at the top of `CHANGELOG.md` collects bullets. (For automated triage runs, see the routine note below.)
-2. When the maintainer is ready to release, they finalize the heading (`TBD` → today's date), merge `DEV → main` with `merge --no-ff` (so the release boundary is visible in `git log main`), and push `main`.
-3. [`.github/workflows/tag-on-merge.yml`](.github/workflows/tag-on-merge.yml) fires on the push, sees the new `## vX.Y.Z` heading in the CHANGELOG diff, and creates a lightweight tag at the merge commit. **No `git tag` step for the maintainer.**
+2. When the maintainer is ready to release, they finalize the heading (`TBD` → today's date), **bump `scanner.VERSION` to match the CHANGELOG version** (`scanner.VERSION` is the runtime version reported by `cli.py --version` and the dashboard footer), **run [`scripts/bump-formula.sh`](scripts/bump-formula.sh) on `DEV` to repoint the Homebrew formula at the previous release's tag tarball** (see "Homebrew formula and self-referential SHA" below — this is a plain `DEV` commit that reaches brew users via this same merge, so it never touches `main` directly), merge `DEV → main` with `merge --no-ff` (so the release boundary is visible in `git log main`), and push `main`. A parity test (`tests/test_version.py`) fails the suite if `scanner.VERSION` and the top CHANGELOG heading drift, so in practice they're bumped together on `DEV` when the version heading is written.
+3. [`.github/workflows/tag-on-merge.yml`](.github/workflows/tag-on-merge.yml) fires on the push, sees the new `## vX.Y.Z` heading in the CHANGELOG diff, and:
+   - creates a lightweight tag at the merge commit (**no `git tag` step for the maintainer**), then
+   - publishes a **GitHub Release** for that tag with the matching CHANGELOG section as the release notes.
 
-No formal `gh release create` at any cadence — the CHANGELOG entry IS the release notes, and the tag IS the release marker. If a particular release ever warrants a formal GitHub Release page (e.g. a major with breaking changes), it can be promoted retroactively from the existing tag.
+So every release is both a tag *and* a GitHub Release. The workflow is CHANGELOG-driven and merge-to-`main` based, so it's automated rather than a local script.
 
-The workflow is idempotent: if the tag already exists (someone tagged manually before the workflow caught up), it's a no-op. It also no-ops on pushes that don't add a new version heading (typo fixes, docs-only edits, etc.).
+The workflow is idempotent: if the tag already exists (someone tagged manually before the workflow caught up) the tag step is a no-op, and if the Release already exists the release step is a no-op. It also no-ops entirely on pushes that don't add a new version heading (typo fixes, docs-only edits, etc.).
 
 Existing tags `v1.0.0`, `v1.1.0`, `v1.1.1` are lightweight and were created by hand before the workflow existed. `v1.1.2` was the first tag created by the workflow. The workflow only *adds* missing tags; it never reconciles existing ones. Don't bother re-tagging the legacy ones.
 
@@ -146,7 +152,11 @@ Patch (`Z` increments) is the default for any release. Bump minor (`Y`) when a n
 
 The Homebrew formula at `Formula/claude-usage.rb` lives inside this same repo. Be careful when bumping it: if the formula's `url` points at a tarball that **contains the formula itself with that sha256**, the sha256 is self-referential and uncomputable. Practical rule: a release's formula must point at the **previous** release's tarball, never its own. In v1.1.1 the formula points at v1.1.0's commit-SHA tarball, so brew users installing v1.1.1's formula receive v1.1.0 code — that's the trade-off of keeping the formula in-tree.
 
-Now that the auto-tag workflow exists, future formula bumps can use the tag-tarball URL (`archive/refs/tags/vX.Y.Z.tar.gz`) instead of commit SHAs — stabler and shorter — as long as the tag-tarball pointed at is from the *previous* release.
+Now that the auto-tag workflow exists, formula bumps use the tag-tarball URL (`archive/refs/tags/vX.Y.Z.tar.gz`) instead of commit SHAs — stabler and shorter — as long as the tag-tarball pointed at is from the *previous* release.
+
+**Automate the bump; never hand-edit the three pinned lines.** [`scripts/bump-formula.sh`](scripts/bump-formula.sh) fetches a released tag's tarball, computes its `sha256`, and rewrites the `url` / `version` / `sha256` lines (leaving `head`, `homepage`, and comments alone). With no argument it targets the latest `v*` tag on origin — run during release prep, before the new tag exists, that's the previous release, exactly what the self-referential rule requires.
+
+**Why a `DEV`-only commit is enough — and why it's one release behind.** Brew reads the formula from the tap's default branch (`main`) HEAD, never from `DEV` or a tag. So the bump is a normal `DEV` commit that becomes visible to brew users only when `DEV → main` merges — which is precisely at the next release. That timing is the point: it lets us pin at the just-frozen *previous* tag and ship it with the release, so **brew always tracks one release behind, advancing automatically each release**, with no direct push to `main` (dodging `main`'s branch protection) and no hand-editing to forget. The manual, forget-prone bump is what let the pin silently rot at v1.1.0 from v1.1.1 through v1.5.0; v1.5.2 caught it up to v1.5.1 and wired in this routine. The only thing a `DEV`-only bump can't do is move brew *between* releases — you'd need a release (a `DEV → main` merge) for that, which is fine because the pin only ever changes at release boundaries anyway.
 
 ## Weekly triage routine
 
