@@ -144,6 +144,9 @@ def init_db(conn):
     # column-add event), so it also covers DBs that gained the column from an
     # earlier build that predated the backfill.
     _ensure_column(conn, "sessions", "topic", "TEXT")
+    # Provenance for `topic`: 'custom' (user-set) or 'ai' (generated). Lets a
+    # later ai-title update the topic without ever clobbering a custom one.
+    _ensure_column(conn, "sessions", "topic_source", "TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
@@ -219,7 +222,7 @@ def _backfill_topics(conn, jsonl_files):
     if not needing:
         return 0
 
-    titles = {}          # session_id -> chosen title
+    titles = {}          # session_id -> (chosen title, source)
     has_custom = set()   # sessions whose topic came from a custom-title record
     for filepath in jsonl_files:
         try:
@@ -242,17 +245,17 @@ def _backfill_topics(conn, jsonl_files):
                         continue
                     # custom-title wins; ai-title only if no custom-title seen.
                     if record.get("type") == "custom-title":
-                        titles[sid] = title
+                        titles[sid] = (title, "custom")
                         has_custom.add(sid)
                     elif sid not in has_custom:
-                        titles.setdefault(sid, title)
+                        titles.setdefault(sid, (title, "ai"))
         except Exception as e:
             print(f"  Warning: error reading {filepath}: {e}")
 
-    for sid, title in titles.items():
+    for sid, (title, source) in titles.items():
         conn.execute(
-            "UPDATE sessions SET topic = ? WHERE session_id = ? "
-            "AND (topic IS NULL OR topic = '')", (title, sid))
+            "UPDATE sessions SET topic = ?, topic_source = ? WHERE session_id = ? "
+            "AND (topic IS NULL OR topic = '')", (title, source, sid))
     conn.commit()
     return len(titles)
 
@@ -394,13 +397,16 @@ def parse_jsonl_file(filepath):
                             "git_branch": "",
                             "model": None,
                             "topic": None,
+                            "topic_source": None,
                         }
                     meta = session_meta[session_id]
                     # custom-title always wins; ai-title only if no custom-title set
                     if rtype == "custom-title":
                         meta["topic"] = title
-                    elif rtype == "ai-title" and not meta.get("topic"):
+                        meta["topic_source"] = "custom"
+                    elif rtype == "ai-title" and meta.get("topic_source") != "custom":
                         meta["topic"] = title
+                        meta["topic_source"] = "ai"
                     continue
 
                 if rtype == "user":
@@ -422,6 +428,7 @@ def parse_jsonl_file(filepath):
                         "git_branch": git_branch,
                         "model": None,
                         "topic": None,
+                        "topic_source": None,
                     }
                 else:
                     meta = session_meta[session_id]
@@ -555,20 +562,20 @@ def upsert_sessions(conn, sessions):
                     (session_id, project_name, first_timestamp, last_timestamp,
                      git_branch, total_input_tokens, total_output_tokens,
                      total_cache_read, total_cache_creation, model, turn_count,
-                     topic)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     topic, topic_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 s["session_id"], s["project_name"], s["first_timestamp"],
                 s["last_timestamp"], s["git_branch"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
-                s["model"], s["turn_count"], s.get("topic")
+                s["model"], s["turn_count"], s.get("topic"), s.get("topic_source")
             ))
         else:
             # Update: add new tokens on top of existing (since we only insert new turns)
             # Keep the highest-priority model (e.g. opus over haiku from subagents)
             existing_row = conn.execute(
-                "SELECT model, topic FROM sessions WHERE session_id = ?",
+                "SELECT model, topic, topic_source FROM sessions WHERE session_id = ?",
                 (s["session_id"],)
             ).fetchone()
             existing_model = existing_row["model"]
@@ -578,10 +585,19 @@ def upsert_sessions(conn, sessions):
             else:
                 model_to_set = existing_model
 
-            # Update topic if the new scan found one and the existing is empty
+            # Topic provenance: custom-title always wins and always writes; an
+            # ai-title only writes when there's no topic yet or the existing one
+            # is itself AI-generated (never clobbers a user-set custom title).
             new_topic = s.get("topic")
+            new_source = s.get("topic_source")
             existing_topic = existing_row["topic"]
-            topic_to_set = new_topic if new_topic else existing_topic
+            existing_source = existing_row["topic_source"]
+            if new_source == "custom":
+                topic_to_set, source_to_set = new_topic, "custom"
+            elif new_source == "ai" and (not existing_topic or existing_source == "ai"):
+                topic_to_set, source_to_set = new_topic, "ai"
+            else:
+                topic_to_set, source_to_set = existing_topic, existing_source
 
             conn.execute("""
                 UPDATE sessions SET
@@ -592,13 +608,14 @@ def upsert_sessions(conn, sessions):
                     total_cache_creation = total_cache_creation + ?,
                     turn_count = turn_count + ?,
                     model = ?,
-                    topic = ?
+                    topic = ?,
+                    topic_source = ?
                 WHERE session_id = ?
             """, (
                 s["last_timestamp"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
-                s["turn_count"], model_to_set, topic_to_set,
+                s["turn_count"], model_to_set, topic_to_set, source_to_set,
                 s["session_id"]
             ))
 
@@ -639,9 +656,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         dirs_to_scan = DEFAULT_PROJECTS_DIRS
 
     jsonl_files = []
+    any_dir_found = False
     for d in dirs_to_scan:
         if not d.exists():
             continue
+        any_dir_found = True
         if verbose:
             print(f"Scanning {d} ...")
         jsonl_files.extend(glob.glob(str(d / "**" / "*.jsonl"), recursive=True))
@@ -652,8 +671,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     # incremental scan would otherwise never revisit. Runs once, gated by the
     # schema_meta 'topic_backfill_done' marker. It runs before the main loop, so
     # on a fresh DB the sessions table is still empty and this no-ops; only DBs
-    # with pre-existing untitled sessions do real work.
-    if _meta_get(conn, "topic_backfill_done") != "1":
+    # with pre-existing untitled sessions do real work. Only set the marker once
+    # a projects directory was actually found and scanned — otherwise (e.g. the
+    # dir is transiently unmounted) a later scan retries instead of permanently
+    # skipping the backfill.
+    if any_dir_found and _meta_get(conn, "topic_backfill_done") != "1":
         filled = _backfill_topics(conn, jsonl_files)
         _meta_set(conn, "topic_backfill_done", "1")
         conn.commit()
@@ -742,12 +764,16 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                     "git_branch": "",
                                     "model": None,
                                     "topic": None,
+                                    "topic_source": None,
                                 }
                             meta = new_session_metas[session_id]
+                            # custom-title always wins; ai-title only if no custom-title set
                             if rtype == "custom-title":
                                 meta["topic"] = title
-                            elif rtype == "ai-title" and not meta.get("topic"):
+                                meta["topic_source"] = "custom"
+                            elif rtype == "ai-title" and meta.get("topic_source") != "custom":
                                 meta["topic"] = title
+                                meta["topic_source"] = "ai"
                             continue
 
                         if rtype == "user":
@@ -768,6 +794,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                 "git_branch": record.get("gitBranch", ""),
                                 "model": None,
                                 "topic": None,
+                                "topic_source": None,
                             }
                         else:
                             meta = new_session_metas[session_id]

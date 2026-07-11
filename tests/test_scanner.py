@@ -880,6 +880,65 @@ class TestSessionTopicScan(unittest.TestCase):
         # A later, title-less rescan must not wipe the stored topic.
         self.assertEqual(self._topic(), "Keep me")
 
+    def test_custom_title_survives_later_ai_title_rescan(self):
+        # #post-review MED fix: an incrementally appended ai-title must not
+        # clobber an already-stored custom title.
+        import time
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1",
+                                      timestamp="2026-04-08T09:00:00Z") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:01:00Z") + "\n")
+            f.write(_make_custom_title_record(session_id="sess-1",
+                                              title="User label") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "User label")
+
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_ai_title_record(session_id="sess-1",
+                                          title="AI guess") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "User label")
+
+    def test_ai_title_updates_on_later_ai_title_rescan(self):
+        import time
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1",
+                                      timestamp="2026-04-08T09:00:00Z") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:01:00Z") + "\n")
+            f.write(_make_ai_title_record(session_id="sess-1",
+                                          title="First AI guess") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "First AI guess")
+
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_ai_title_record(session_id="sess-1",
+                                          title="Better AI guess") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "Better AI guess")
+
+    def test_custom_title_wins_on_later_custom_title_rescan(self):
+        import time
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1",
+                                      timestamp="2026-04-08T09:00:00Z") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:01:00Z") + "\n")
+            f.write(_make_ai_title_record(session_id="sess-1",
+                                          title="AI guess") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "AI guess")
+
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_custom_title_record(session_id="sess-1",
+                                              title="User label") + "\n")
+        self._scan()
+        self.assertEqual(self._topic(), "User label")
+
     def test_title_only_session_creates_no_phantom_row(self):
         # A record stream with a title but no turns for that session must not
         # INSERT a token-less phantom row.
@@ -1003,6 +1062,23 @@ class TestTopicBackfill(unittest.TestCase):
         self.assertEqual(filled, 1)  # only 'fill' needed a topic
         self.assertEqual(conn.execute("SELECT topic FROM sessions WHERE session_id='keep'").fetchone()[0], "existing")
         self.assertEqual(conn.execute("SELECT topic FROM sessions WHERE session_id='fill'").fetchone()[0], "filled")
+        conn.close()
+
+    def test_backfill_marker_not_set_when_no_projects_dir_found(self):
+        # #post-review LOW fix: if no projects directory exists yet (e.g. a
+        # transiently unmounted drive), the 'done' marker must stay unset so a
+        # later scan retries the backfill instead of skipping it forever.
+        missing_dir = Path(self.tmpdir) / "does-not-exist"
+        conn = get_db(self.db_path)
+        result = scan(projects_dir=missing_dir, db_path=self.db_path, verbose=False)
+        self.assertEqual(result["new"], 0)
+        self.assertIsNone(_meta_get(conn, "topic_backfill_done"))
+        conn.close()
+
+        # Once a real projects dir with content is scanned, the marker is set.
+        self._scan()
+        conn = get_db(self.db_path)
+        self.assertEqual(_meta_get(conn, "topic_backfill_done"), "1")
         conn.close()
 
 
