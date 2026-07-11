@@ -210,6 +210,7 @@ def get_dashboard_data(db_path=DB_PATH):
         SELECT
             t.agent_id                               as agent_id,
             {AGENT_TYPE_EXPR}                        as agent_type,
+            a.description                            as description,
             COALESCE(NULLIF(t.model, ''), 'unknown') as model,
             MIN(t.timestamp)                         as start_ts,
             SUM(t.input_tokens)                      as input,
@@ -232,6 +233,7 @@ def get_dashboard_data(db_path=DB_PATH):
     top_dispatches = [{
         "agent_id":       r["agent_id"],
         "agent_type":     r["agent_type"],
+        "description":    r["description"],
         "model":          r["model"],
         "start":          (r["start_ts"] or "")[:16].replace("T", " "),
         "start_date":     (r["start_ts"] or "")[:10],
@@ -482,6 +484,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: var(--raised); }
   .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(72,160,199,0.15); color: var(--blue); }
+  .dispatch-desc { max-width: 240px; margin-top: 3px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cost { color: var(--green); font-family: monospace; }
   .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
   .num { font-family: monospace; }
@@ -2118,8 +2121,12 @@ function renderTopDispatches(rows) {
       : `<td class="cost-na">n/a</td>`;
     const col = colorForAgentType(d.agent_type);
     const typeStyle = `background:${col}22;color:${col};border:1px solid ${col}44`;
+    // Async dispatches have no agentType but do carry a task description — show it.
+    const desc = d.description
+      ? `<div class="dispatch-desc muted" title="${esc(d.description)}">${esc(d.description)}</div>`
+      : '';
     return `<tr>
-      <td><span class="model-tag" style="${typeStyle}">${esc(d.agent_type)}</span></td>
+      <td><span class="model-tag" style="${typeStyle}">${esc(d.agent_type)}</span>${desc}</td>
       <td class="muted">${esc(d.start || '—')}</td>
       <td><span class="model-tag">${esc(d.model)}</span></td>
       <td class="num">${d.turns}</td>
@@ -2678,11 +2685,11 @@ function exportProjectBranchCSV() {
 }
 
 function exportDispatchesCSV() {
-  const header = ['Type', 'Agent ID', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
+  const header = ['Type', 'Agent ID', 'Description', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
   const rows = lastFilteredDispatches.map(d => {
     const total = d.input + d.output + d.cache_read + d.cache_creation;
     const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
-    return [d.agent_type, d.agent_id, d.start, d.model, d.turns,
+    return [d.agent_type, d.agent_id, d.description || '', d.start, d.model, d.turns,
             d.tool_uses != null ? d.tool_uses : '', d.duration_ms != null ? d.duration_ms : '',
             d.input, d.output, d.cache_read, d.cache_creation, total, cost.toFixed(4), d.status || ''];
   });

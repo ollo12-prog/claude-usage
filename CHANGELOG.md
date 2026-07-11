@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Scanner
+
+- **Async (background) subagent dispatches are now attributed instead of showing as `unknown`.** A background agent's launch record (`toolUseResult` with `status: "async_launched"`) carries an `agentId` but no `agentType`, and never emits a later completion record — so the scanner, which required `agentType`, dropped every one of them and the dashboard showed them as `unknown` with no tool-use/duration. They are now captured as type **`async`**. The launch record's task `description` is also stored (new `agents.description` column) so each async dispatch keeps its task text.
+
+### Dashboard
+
+- The **Top Subagent Dispatches** table now shows the task description beneath the `async` tag (truncated, full text on hover), and the dispatch **CSV export gained a `Description` column**. Sync dispatches (which have a real `agentType`) are unchanged.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard

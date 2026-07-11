@@ -106,6 +106,23 @@ class TestSubagentDetection(unittest.TestCase):
         _, _, agents, _ = parse_jsonl_file(path)
         self.assertEqual(agents, [])
 
+    def test_async_launch_captured_as_async_type(self):
+        # Background dispatches record no agentType/stats; they must still be
+        # captured (as type 'async') so they don't fall through to 'unknown'.
+        rec = json.dumps({"type": "user", "sessionId": "s1",
+                          "toolUseResult": {"agentId": "agent-async",
+                                            "isAsync": True,
+                                            "status": "async_launched",
+                                            "description": "Background task",
+                                            "resolvedModel": "claude-sonnet-5"}})
+        path = self._write("a.jsonl", [rec])
+        _, _, agents, _ = parse_jsonl_file(path)
+        self.assertEqual(len(agents), 1)
+        self.assertEqual(agents[0]["agent_id"], "agent-async")
+        self.assertEqual(agents[0]["agent_type"], "async")
+        self.assertEqual(agents[0]["description"], "Background task")
+        self.assertIsNone(agents[0]["total_tokens"])
+
 
 class TestSubagentScanIntegration(unittest.TestCase):
     def setUp(self):

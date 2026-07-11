@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # runtime version has to live here as a constant. Keep this in lockstep with the
 # top CHANGELOG heading and vscode-extension/package.json (a parity test guards
 # all three; see tests/test_version.py).
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
@@ -147,6 +147,10 @@ def init_db(conn):
     # Provenance for `topic`: 'custom' (user-set) or 'ai' (generated). Lets a
     # later ai-title update the topic without ever clobbering a custom one.
     _ensure_column(conn, "sessions", "topic_source", "TEXT")
+    # Dispatch task label. Async ("async_launched") dispatches carry a
+    # `description` but no agentType; this preserves the task text so the
+    # dashboard can show it instead of a bare 'async' tag.
+    _ensure_column(conn, "agents", "description", "TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
@@ -313,12 +317,23 @@ def extract_agent_dispatch(record):
     if not isinstance(tur, dict):
         return None
     agent_id = tur.get("agentId")
-    agent_type = tur.get("agentType")
-    if not agent_id or not agent_type:
+    if not agent_id:
         return None
+    agent_type = tur.get("agentType")
+    if not agent_type:
+        # Async/background dispatches ("status": "async_launched") carry no
+        # agentType and no aggregate stats at launch, and never emit a later
+        # completion record. Capture them as 'async' instead of dropping them —
+        # otherwise every background agent shows as 'unknown' in the dashboard.
+        # ponytail: single 'async' bucket; surface description per-row if wanted.
+        if tur.get("isAsync") or tur.get("status") == "async_launched":
+            agent_type = "async"
+        else:
+            return None
     return {
         "agent_id": agent_id,
         "agent_type": agent_type,
+        "description": tur.get("description"),
         "dispatched_in_session": record.get("sessionId"),
         "completed_at": record.get("timestamp", ""),
         "status": tur.get("status"),
@@ -334,11 +349,12 @@ def upsert_agents(conn, agents):
         return
     conn.executemany("""
         INSERT INTO agents
-            (agent_id, agent_type, dispatched_in_session, completed_at,
+            (agent_id, agent_type, description, dispatched_in_session, completed_at,
              status, total_tokens, total_duration_ms, tool_use_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent_id) DO UPDATE SET
             agent_type            = excluded.agent_type,
+            description           = excluded.description,
             dispatched_in_session = excluded.dispatched_in_session,
             completed_at          = excluded.completed_at,
             status                = excluded.status,
@@ -346,8 +362,8 @@ def upsert_agents(conn, agents):
             total_duration_ms     = excluded.total_duration_ms,
             tool_use_count        = excluded.tool_use_count
     """, [
-        (a["agent_id"], a["agent_type"], a.get("dispatched_in_session"),
-         a.get("completed_at"), a.get("status"),
+        (a["agent_id"], a["agent_type"], a.get("description"),
+         a.get("dispatched_in_session"), a.get("completed_at"), a.get("status"),
          a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
         for a in agents
     ])
