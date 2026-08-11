@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "deny": [
+      "Skill(claude-api)",
+      "Skill(b29e7cf65e5c:claude-api)"
+    ]
+  }
+}

@@ -1,11 +1,11 @@
 # Packaging metadata so the tool can be installed with `uv tool install` / `pipx`
-# without a clone (#144). This is packaging only — the tool stays stdlib-only at
-# runtime ([project.dependencies] is empty) and the clone + `python cli.py` path
-# is unaffected.
+# without a clone. This is packaging only — the tool stays stdlib-only at runtime
+# ([project.dependencies] is empty) and the clone + `python cli.py` path is
+# unaffected.
 #
 # The version is read dynamically from scanner.VERSION so it stays a single
-# source of truth (kept in lockstep with the CHANGELOG heading and the VS Code
-# extension's package.json by tests/test_version.py) — do NOT hardcode it here.
+# source of truth (kept in lockstep with the CHANGELOG heading by
+# tests/test_version.py) — do NOT hardcode it here.
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -22,8 +22,9 @@ keywords = ["claude", "claude-code", "usage", "tokens", "cost", "dashboard"]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/phuryn/claude-usage"
-Issues = "https://github.com/phuryn/claude-usage/issues"
+Homepage = "https://github.com/ollo12-prog/claude-usage"
+Issues = "https://github.com/ollo12-prog/claude-usage/issues"
+Upstream = "https://github.com/phuryn/claude-usage"
 
 [project.scripts]
 claude-usage = "cli:main"

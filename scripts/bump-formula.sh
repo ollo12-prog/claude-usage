@@ -9,18 +9,17 @@ set -euo pipefail
 #   that contains that very hash (self-referential, uncomputable). So the formula
 #   must point at an ALREADY-FROZEN tag: the previous release.
 #
-#   Brew reads the formula from the tap's default branch (main), never from DEV
-#   or a tag. Run this on DEV while prepping a release; the change reaches brew
-#   users through the normal DEV -> main release merge. It never touches main
-#   directly, so it dodges main's branch protection. Net effect: brew tracks one
-#   release behind, and it advances automatically every release instead of being
-#   hand-edited (which is how the pin silently rotted at v1.1.0 for months).
+#   Brew reads the formula from the tap's default branch (main), never from a
+#   tag. Work in this fork lands on main, so run this after a release tags: it
+#   pins at that just-frozen tag and reaches brew users on the next push. Net
+#   effect: brew tracks one release behind and advances automatically each
+#   release, with no hand-editing to forget.
 #
 # USAGE
 #   scripts/bump-formula.sh [TAG]
 #     TAG   tag to pin at (e.g. v1.5.2). Defaults to the latest v* tag on origin,
 #           which — run during release prep, before the new tag exists — is the
-#           previous release. Review the diff, then commit on DEV.
+#           previous release. Review the diff, then commit on main.
 #
 # See AGENTS.md "Homebrew formula and self-referential SHA".
 
@@ -70,4 +69,4 @@ echo
 echo "✅  Updated $(git -C "$REPO_DIR" rev-parse --show-prefix 2>/dev/null)Formula/claude-usage.rb:"
 grep -E '^[[:space:]]*(url|version|sha256) ' "$FORMULA" | sed 's/^/    /'
 echo
-echo "➡   Review, then commit on DEV. It ships to brew users at the next DEV -> main release merge."
+echo "➡   Review, then commit on main. It ships to brew users on the next push."

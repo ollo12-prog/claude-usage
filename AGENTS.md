@@ -4,6 +4,8 @@ Guidance for any coding agent (Codex, Claude Code, etc.) working on this reposit
 
 > **Naming note.** This project *analyzes* Claude Code's local usage logs, so "Claude Code" below always refers to that product (the source of the JSONL data) — not to the agent reading this file. The agent working on the codebase is referred to as "the coding agent" or just "you".
 
+> **Do NOT load the `claude-api` skill in this repo.** Its trigger matches any mention of Claude / Anthropic / Opus / Sonnet / Haiku / `claude-*` — every task here — but the skill covers **calling** the Anthropic API, which this repo never does: stdlib only, zero SDK imports, no network calls to Anthropic. Loading it costs ~167k tokens of context and re-sends that block every turn. Its only relevant content is the pricing table, and the authority for that here is the `PRICING` dict in [cli.py](cli.py) (see "Cost calculation"); verify rates against [claude.com/pricing#api](https://claude.com/pricing#api) instead. [.claude/settings.json](.claude/settings.json) enforces this for Claude Code by denying `Skill(claude-api)`; this note is for agents that don't read that file.
+
 ## Project shape
 
 Three Python files, stdlib only, no `pip install` step. Python 3.8+.
@@ -109,22 +111,19 @@ This applies to all agents working on this repo, not just Claude Code.
 
 [SemVer](https://semver.org/). **`CHANGELOG.md` is the canonical version reference**; tags are a projection of it, created automatically.
 
+Work lands directly on `main`; this fork has no `DEV` branch.
+
 The release flow:
-1. While work accumulates on `DEV`, the `## vX.Y.Z — TBD` heading at the top of `CHANGELOG.md` collects bullets. (For automated triage runs, see the routine note below.)
-2. When the maintainer is ready to release, they finalize the heading (`TBD` → today's date), **bump `scanner.VERSION` to match the CHANGELOG version** (`scanner.VERSION` is the runtime version reported by `cli.py --version` and the dashboard footer), **run [`scripts/bump-formula.sh`](scripts/bump-formula.sh) on `DEV` to repoint the Homebrew formula at the previous release's tag tarball** (see "Homebrew formula and self-referential SHA" below — this is a plain `DEV` commit that reaches brew users via this same merge, so it never touches `main` directly), merge `DEV → main` with `merge --no-ff` (so the release boundary is visible in `git log main`), and push `main`. A parity test (`tests/test_version.py`) fails the suite if `scanner.VERSION` and the top CHANGELOG heading drift, so in practice they're bumped together on `DEV` when the version heading is written.
-3. [`.github/workflows/tag-on-merge.yml`](.github/workflows/tag-on-merge.yml) fires on the push, sees the new `## vX.Y.Z` heading in the CHANGELOG diff, and:
-   - creates a lightweight tag at the merge commit (**no `git tag` step for the maintainer**), then
-   - publishes a **GitHub Release** for that tag with the matching CHANGELOG section as the release notes.
+1. **Do not put a version heading on `main` before you intend to release.** The tag workflow's regex matches `## vX.Y.Z` followed by whitespace, so a `— TBD` heading counts and would tag and publish an unfinished release the moment it lands. (`tests/test_version.py` also fails while a heading and `scanner.VERSION` disagree, so a stray heading can't pass CI either.) Let unreleased changes sit without a heading; add the heading in the release commit.
+2. To release: add the `## vX.Y.Z — YYYY-MM-DD` heading with its bullets and set `scanner.VERSION` to the same version in the same commit. `scanner.VERSION` is what `cli.py --version` and the dashboard footer report.
+3. Push `main`. [`.github/workflows/tag-on-merge.yml`](.github/workflows/tag-on-merge.yml) sees the new `## vX.Y.Z` heading in the push's CHANGELOG diff and creates the tag plus a GitHub Release with that section as the notes. There is no manual `git tag` step.
+4. After the tag exists, run [`scripts/bump-formula.sh`](scripts/bump-formula.sh) to repoint the Homebrew formula at it, and push. See "Homebrew formula and self-referential SHA" below.
 
-So every release is both a tag *and* a GitHub Release. The workflow is CHANGELOG-driven and merge-to-`main` based, so it's automated rather than a local script.
-
-The workflow is idempotent: if the tag already exists (someone tagged manually before the workflow caught up) the tag step is a no-op, and if the Release already exists the release step is a no-op. It also no-ops entirely on pushes that don't add a new version heading (typo fixes, docs-only edits, etc.).
-
-Existing tags `v1.0.0`, `v1.1.0`, `v1.1.1` are lightweight and were created by hand before the workflow existed. `v1.1.2` was the first tag created by the workflow. The workflow only *adds* missing tags; it never reconciles existing ones. Don't bother re-tagging the legacy ones.
+The workflow is idempotent: it no-ops if the tag or Release already exists, and on any push that doesn't add a new version heading. It only adds missing tags; it never reconciles existing ones.
 
 ### CHANGELOG conventions
 
-The workflow trusts the CHANGELOG, so the format matters. Every new release entry on `DEV` follows this exact shape:
+The workflow trusts the CHANGELOG, so the format matters. Every new release entry follows this exact shape:
 
 ```
 ## vX.Y.Z — TBD
@@ -140,30 +139,19 @@ Format rules the workflow relies on:
 |---|---|---|
 | Heading | `## vX.Y.Z` (exactly two `#`, the `v` prefix, three numeric components — strict semver) | The workflow regex `^## v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)` won't match anything else. `v1.1`, `v1.1.0-rc1`, `V1.1.0` are all silently ignored. |
 | Separator | ` — ` (em-dash with surrounding spaces) | Cosmetic but consistent. The workflow ignores everything after the version. |
-| Date | `TBD` while accumulating on `DEV`; replace with `YYYY-MM-DD` *at the moment of merging to `main`* | The workflow doesn't enforce dates — but a `TBD` heading that ships to main means the release looks unfinished forever. |
+| Date | `TBD` while accumulating; replace with `YYYY-MM-DD` *in the release commit* | The workflow doesn't enforce dates — but a `TBD` heading that ships to main means the release looks unfinished forever. |
 | Subsections | `### Dashboard`, `### Scanner`, `### Packaging`, `### Project / docs` — pick the smallest set that fits | Keeps the CHANGELOG scannable. |
-| Bullets | Past tense, link the PR/issue with `#N`, credit external contributors with `thanks @login` | Lets readers (and future maintainers tracing history) find the source quickly. |
+| Bullets | Past tense, credit external contributors with `thanks @login`. Bare `#N` only for this fork's own PRs/issues; write upstream ones as `phuryn/claude-usage#N` | A bare `#N` resolves against this repo, so an upstream number silently links to something unrelated. |
 
 **The TBD → date rule is the only step a human must remember at release time.** If you forget, the workflow still tags correctly, but the CHANGELOG entry on main reads `## v1.1.3 — TBD` forever. Fix-up commit can correct it, but it'll feel sloppy.
 
-Patch (`Z` increments) is the default for any release. Bump minor (`Y`) when a non-breaking user-visible feature lands (e.g. Today range button shipping alone would have been a minor in a different world). Bump major (`X`) only on breaking changes — there have been none and likely won't be soon. There's no automation around picking the right bump; the maintainer (or `/triage`) decides when writing the CHANGELOG heading on `DEV`.
+Patch (`Z`) is the default. Bump minor (`Y`) when a non-breaking user-visible feature lands, major (`X`) only on breaking changes. Nothing automates the choice; whoever writes the CHANGELOG heading decides.
 
 ### Homebrew formula and self-referential SHA
 
-The Homebrew formula at `Formula/claude-usage.rb` lives inside this same repo. Be careful when bumping it: if the formula's `url` points at a tarball that **contains the formula itself with that sha256**, the sha256 is self-referential and uncomputable. Practical rule: a release's formula must point at the **previous** release's tarball, never its own. In v1.1.1 the formula points at v1.1.0's commit-SHA tarball, so brew users installing v1.1.1's formula receive v1.1.0 code — that's the trade-off of keeping the formula in-tree.
+The Homebrew formula at `Formula/claude-usage.rb` lives inside the repo it installs. Its `url` therefore cannot point at its own release: the tarball would contain the formula carrying that `sha256`, which is self-referential and uncomputable. The rule is that the formula points at an **already-frozen tag** — never the release it ships in — so brew tracks one release behind by design.
 
-Now that the auto-tag workflow exists, formula bumps use the tag-tarball URL (`archive/refs/tags/vX.Y.Z.tar.gz`) instead of commit SHAs — stabler and shorter — as long as the tag-tarball pointed at is from the *previous* release.
+Brew reads the formula from the tap's default branch (`main`) HEAD, never from a tag. So the bump is a normal `main` commit that reaches brew users on the next push, and the pin only ever needs to move at release boundaries.
 
-**Automate the bump; never hand-edit the three pinned lines.** [`scripts/bump-formula.sh`](scripts/bump-formula.sh) fetches a released tag's tarball, computes its `sha256`, and rewrites the `url` / `version` / `sha256` lines (leaving `head`, `homepage`, and comments alone). With no argument it targets the latest `v*` tag on origin — run during release prep, before the new tag exists, that's the previous release, exactly what the self-referential rule requires.
+**Automate the bump; never hand-edit the three pinned lines.** [`scripts/bump-formula.sh`](scripts/bump-formula.sh) fetches a released tag's tarball, computes its `sha256`, and rewrites the `url` / `version` / `sha256` lines, leaving `head`, `homepage`, and comments alone. With no argument it targets the latest `v*` tag on origin — run it **after** a release tags and that is the just-frozen release, exactly what the rule requires. `REPO_SLUG` is `ollo12-prog/claude-usage`, so the formula serves this fork's code.
 
-**Why a `DEV`-only commit is enough — and why it's one release behind.** Brew reads the formula from the tap's default branch (`main`) HEAD, never from `DEV` or a tag. So the bump is a normal `DEV` commit that becomes visible to brew users only when `DEV → main` merges — which is precisely at the next release. That timing is the point: it lets us pin at the just-frozen *previous* tag and ship it with the release, so **brew always tracks one release behind, advancing automatically each release**, with no direct push to `main` (dodging `main`'s branch protection) and no hand-editing to forget. The manual, forget-prone bump is what let the pin silently rot at v1.1.0 from v1.1.1 through v1.5.0; v1.5.2 caught it up to v1.5.1 and wired in this routine. The only thing a `DEV`-only bump can't do is move brew *between* releases — you'd need a release (a `DEV → main` merge) for that, which is fine because the pin only ever changes at release boundaries anyway.
-
-**In this fork, the formula tracks the fork, and there is no `DEV` branch.** `bump-formula.sh`'s `REPO_SLUG` is `ollo12-prog/claude-usage`, and work lands directly on `main`, so the bump is a plain `main` commit rather than a `DEV` commit awaiting a merge. The self-referential rule is unchanged and still binds: run the script **after** a release tags, so it pins at that just-frozen tag and reaches brew users on the next push. Until v1.5.6 the fork had no tags at all, which is why the pin sat on upstream's v1.5.4 — brew users were receiving upstream code with none of this fork's fixes.
-
-## Weekly triage routine
-
-The repo has a self-contained slash command at [.claude/commands/triage.md](.claude/commands/triage.md) that automates the weekly PR/issue cleanup we used to ship v1.1.0: classify open items with Codex, merge no-brainers to DEV preserving authorship, run tests, close duplicates / scope-violations with friendly messages, bump CHANGELOG by patch, push DEV. **The routine never pushes to `main`** — release decisions stay with the maintainer.
-
-Register the Windows Task Scheduler entry with [scripts/setup-weekly-triage.ps1](scripts/setup-weekly-triage.ps1). Logs go to `logs/triage-*.log`.
-
-If you're working on this repo and want to invoke the routine ad-hoc, just type `/triage` in Claude Code. Hard safety rails (test-passing gates, no security-sensitive auto-merges, no scope-changing merges, Codex sign-off required on closures) live inside `triage.md`.

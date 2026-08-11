@@ -48,7 +48,7 @@ brew install ollo12-prog/claude-usage/claude-usage
 claude-usage dashboard
 ```
 
-> Homebrew has disabled installing a formula from an arbitrary raw URL, so tap the repo first (thanks @adrianlungu for the working incantation in #46).
+> Homebrew has disabled installing a formula from an arbitrary raw URL, so tap the repo first (thanks @adrianlungu for the working incantation in [phuryn/claude-usage#46](https://github.com/phuryn/claude-usage/issues/46)).
 
 After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
 
@@ -58,7 +58,7 @@ uv tool install git+https://github.com/ollo12-prog/claude-usage
 claude-usage dashboard
 ```
 
-Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/ollo12-prog/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps (#144).
+Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/ollo12-prog/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps ([phuryn/claude-usage#144](https://github.com/phuryn/claude-usage/issues/144)).
 
 ### macOS / Linux (clone)
 ```

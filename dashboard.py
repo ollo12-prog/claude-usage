@@ -385,10 +385,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  /* VS Code-style scrollbars. The dashboard renders inside a webview iframe,
-     which doesn't inherit VS Code's --vscode-* theme variables, so we set the
-     scrollbar here: no arrows, grey thumb (#28292B, #8B8B8D on hover) over a
-     #121314 track, in a 21px gutter. Also fits the dark UI standalone. */
+  /* Scrollbars styled to match the dark UI: no arrows, grey thumb (#28292B,
+     #8B8B8D on hover) over a #121314 track, in a 21px gutter. */
   * { scrollbar-width: auto; scrollbar-color: #28292B #121314; }
   ::-webkit-scrollbar { width: 21px; height: 21px; }
   ::-webkit-scrollbar-track { background: #121314; }
