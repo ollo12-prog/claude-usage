@@ -447,7 +447,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .range-select option { background: var(--card); color: var(--text); }
 
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
-  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  /* 8 cards must fit one row inside .container (1400 - 48 padding = 1352): 8*150 + 7*16 = 1312. */
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
   .stat-card .value { font-size: 22px; font-weight: 700; }
@@ -941,7 +942,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of August 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/ollo12-prog/claude-usage" target="_blank">https://github.com/ollo12-prog/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -1054,7 +1055,7 @@ function tzDisplayName(tzMode) {
   }
 }
 
-// ── Pricing (Anthropic API, June 2026 defaults; editable locally) ──────────
+// ── Pricing (Anthropic API, August 2026 defaults; editable locally) ────────
 const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
 const DEFAULT_PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
@@ -1854,7 +1855,7 @@ function renderStats(t) {
     { label: 'Subagent Tokens', value: fmt(t.subagent_tokens || 0), sub: 'included in totals' },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, June 2026', color: C.green },
+    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, August 2026', color: C.green },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">
