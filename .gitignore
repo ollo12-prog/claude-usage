@@ -9,3 +9,4 @@ build/
 
 .pr-candidates.md
 /tmp/
+.local-delegate/
