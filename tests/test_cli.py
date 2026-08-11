@@ -3,6 +3,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from datetime import timedelta
 from unittest import mock
 import cli
 from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING
@@ -61,6 +62,35 @@ class TestGetPricing(unittest.TestCase):
         p = get_pricing("claude-opus-4-8-20260528")
         self.assertEqual(p["input"], 5.00)
         self.assertEqual(p["output"], 25.00)
+
+    def test_opus_5_has_explicit_entry(self):
+        """Opus 5 must be pinned, not resolved via the generic 'opus' substring
+        fallback — so it stays correct if the 4.x rates ever diverge."""
+        self.assertIn("claude-opus-5", PRICING)
+        for model in ("claude-opus-5", "claude-opus-5-20260701"):
+            p = get_pricing(model)
+            self.assertEqual(p["input"], 5.00, f"{model} input price wrong")
+            self.assertEqual(p["output"], 25.00, f"{model} output price wrong")
+            self.assertEqual(p["cache_read"], 0.50, f"{model} cache_read wrong")
+            self.assertEqual(p["cache_write"], 6.25, f"{model} cache_write wrong")
+
+    def test_sonnet_5_intro_rate_expires(self):
+        """Sonnet 5's introductory rate is dated: on the last intro day it bills
+        at $2/$10, and the day after at the standard $3/$15."""
+        last_intro_day = cli.SONNET_5_INTRO_ENDS
+        self.assertEqual(cli.sonnet_5_pricing(last_intro_day), cli.SONNET_5_INTRO)
+        self.assertEqual(cli.sonnet_5_pricing(last_intro_day + timedelta(days=1)),
+                         cli.SONNET_5_STANDARD)
+        self.assertEqual(cli.SONNET_5_INTRO["input"], 2.00)
+        self.assertEqual(cli.SONNET_5_INTRO["output"], 10.00)
+        self.assertEqual(cli.SONNET_5_STANDARD["input"], 3.00)
+        self.assertEqual(cli.SONNET_5_STANDARD["output"], 15.00)
+
+    def test_sonnet_5_table_entry_matches_today(self):
+        """The PRICING table holds the rate active today, not a frozen literal."""
+        self.assertEqual(PRICING["claude-sonnet-5"], cli.sonnet_5_pricing())
+        self.assertEqual(get_pricing("claude-sonnet-5-20260401"),
+                         cli.sonnet_5_pricing())
 
     def test_opus_4_7_has_explicit_entry(self):
         """Regression guard for issue #61 — Opus 4.7 must be present."""

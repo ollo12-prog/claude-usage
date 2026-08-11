@@ -18,17 +18,31 @@ from scanner import VERSION
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
+# Sonnet 5 launched on an introductory rate that expires; after that it bills at
+# the standard Sonnet rate. Resolved once at import against today's date.
+# ponytail: one dated model, so one dated constant — if a second model ever needs
+# this, replace it with an effective-dated tier list rather than a second special case.
+SONNET_5_INTRO_ENDS = date(2026, 8, 31)
+SONNET_5_INTRO    = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50}
+SONNET_5_STANDARD = {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75}
+
+def sonnet_5_pricing(day=None):
+    """Sonnet 5 rate active on `day` (a date; defaults to today)."""
+    return SONNET_5_INTRO if (day or date.today()) <= SONNET_5_INTRO_ENDS else SONNET_5_STANDARD
+
 PRICING = {
     # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
     "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
+    # Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
+    # "opus" substring fallback so it stays pinned if the 4.x rates ever diverge.
+    "claude-opus-5":     {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-8":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    # Sonnet 5 INTRO pricing through 2026-08-31; standard is $3/$15 (cache 0.30/3.75)
-    "claude-sonnet-5":   {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50},
+    "claude-sonnet-5":   sonnet_5_pricing(),
     "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},

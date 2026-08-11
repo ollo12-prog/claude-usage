@@ -1061,12 +1061,16 @@ const DEFAULT_PRICING = {
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
+  // Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
+  // 'opus' substring fallback so it stays pinned if the 4.x rates ever diverge.
+  'claude-opus-5':     { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  // Sonnet 5 INTRO pricing through 2026-08-31; standard is $3/$15 (cache 0.30/3.75)
-  'claude-sonnet-5':   { input:  2.00, output: 10.00, cache_write:  2.50, cache_read: 0.20 },
+  // Sonnet 5's introductory rate expires; see SONNET_5_* below (must stay in sync
+  // with cli.py's sonnet_5_pricing). Placeholder — overwritten at load.
+  'claude-sonnet-5':   { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
@@ -1074,6 +1078,15 @@ const DEFAULT_PRICING = {
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
 };
+// Sonnet 5 launched on an introductory rate that expires; after that it bills at
+// the standard Sonnet rate. Resolved once at load against today's local date.
+// Keep in sync with cli.py's SONNET_5_* / sonnet_5_pricing().
+const SONNET_5_INTRO_ENDS = '2026-08-31';
+const SONNET_5_INTRO    = { input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.20 };
+const SONNET_5_STANDARD = { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 };
+DEFAULT_PRICING['claude-sonnet-5'] =
+  localISODate(new Date()) <= SONNET_5_INTRO_ENDS ? SONNET_5_INTRO : SONNET_5_STANDARD;
+
 let PRICING = JSON.parse(JSON.stringify(DEFAULT_PRICING));
 let pricingOverrides = {};
 

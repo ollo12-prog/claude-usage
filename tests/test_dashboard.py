@@ -547,24 +547,56 @@ class TestPricingParity(unittest.TestCase):
             prices[model] = {"input": inp, "output": out}
         return prices
 
+    def _expected_prices(self):
+        """CLI prices as they should appear in the JS *literal*.
+
+        `cli.PRICING["claude-sonnet-5"]` is resolved against today's date, but the
+        JS literal always holds the standard rate as a placeholder — the dashboard
+        overwrites it at load. The dated pair is checked separately below.
+        """
+        import cli
+        expected = dict(cli.PRICING)
+        expected["claude-sonnet-5"] = cli.SONNET_5_STANDARD
+        return expected
+
     def test_all_cli_models_in_dashboard(self):
-        from cli import PRICING as CLI_PRICING
         js_prices = self._extract_js_pricing()
-        for model in CLI_PRICING:
+        for model in self._expected_prices():
             self.assertIn(model, js_prices, f"{model} missing from dashboard JS")
 
     def test_prices_match(self):
-        from cli import PRICING as CLI_PRICING
         js_prices = self._extract_js_pricing()
-        for model in CLI_PRICING:
+        for model, expected in self._expected_prices().items():
             self.assertAlmostEqual(
-                CLI_PRICING[model]["input"], js_prices[model]["input"],
+                expected["input"], js_prices[model]["input"],
                 msg=f"{model} input price mismatch"
             )
             self.assertAlmostEqual(
-                CLI_PRICING[model]["output"], js_prices[model]["output"],
+                expected["output"], js_prices[model]["output"],
                 msg=f"{model} output price mismatch"
             )
+
+    def test_sonnet_5_dated_pricing_matches(self):
+        """The intro/standard rates and the expiry date must agree across the
+        Python and JS copies — they are two hand-maintained tables (see AGENTS.md)."""
+        import re
+        import cli
+
+        ends = re.search(r"SONNET_5_INTRO_ENDS = '([\d-]+)'", HTML_TEMPLATE)
+        self.assertIsNotNone(ends, "SONNET_5_INTRO_ENDS missing from dashboard JS")
+        self.assertEqual(ends.group(1), cli.SONNET_5_INTRO_ENDS.isoformat(),
+                         "Sonnet 5 intro expiry date differs between cli.py and dashboard.py")
+
+        for name, py_rates in (("SONNET_5_INTRO", cli.SONNET_5_INTRO),
+                               ("SONNET_5_STANDARD", cli.SONNET_5_STANDARD)):
+            m = re.search(
+                name + r" *= \{ input: ([\d.]+), output: ([\d.]+), "
+                       r"cache_write: ([\d.]+), cache_read: ([\d.]+) \}",
+                HTML_TEMPLATE)
+            self.assertIsNotNone(m, f"{name} missing from dashboard JS")
+            for i, field in enumerate(("input", "output", "cache_write", "cache_read")):
+                self.assertAlmostEqual(py_rates[field], float(m.group(i + 1)),
+                                       msg=f"{name} {field} differs between cli.py and dashboard.py")
 
 
 if __name__ == "__main__":

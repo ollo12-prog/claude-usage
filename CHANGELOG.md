@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.5.6 — TBD
+## v1.5.6 — 2026-08-11
+
+### Pricing
+
+- Added an explicit **Claude Opus 5** entry ($5 / $25 per MTok, cache 0.50 / 6.25) to both pricing tables. It previously resolved through the generic `opus` substring fallback — the rates were right, but the model had no pinned row and would silently follow Opus 4.x if those rates ever diverge.
+- **Sonnet 5's introductory rate is now dated.** The $2 / $10 intro rate expires **2026-08-31**; from 2026-09-01 Sonnet 5 bills at the standard $3 / $15 (cache 0.30 / 3.75). The rate in effect is resolved against the current date instead of being frozen at the intro price, which would have under-reported every Sonnet 5 turn by a third from September onward. `tests/test_dashboard.py` now checks the intro/standard rates *and* the expiry date agree between [cli.py](cli.py) and [dashboard.py](dashboard.py).
 
 ### Scanner
 
