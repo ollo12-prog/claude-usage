@@ -43,8 +43,8 @@ No `pip install`, no virtual environment, no build step.
 
 ### macOS / Linux (Homebrew)
 ```
-brew tap phuryn/claude-usage https://github.com/phuryn/claude-usage
-brew install phuryn/claude-usage/claude-usage
+brew tap ollo12-prog/claude-usage https://github.com/ollo12-prog/claude-usage
+brew install ollo12-prog/claude-usage/claude-usage
 claude-usage dashboard
 ```
 
@@ -54,11 +54,11 @@ After install, the `claude-usage` command is on your `PATH` and accepts the same
 
 ### Any OS (uv tool / pipx)
 ```
-uv tool install git+https://github.com/phuryn/claude-usage
+uv tool install git+https://github.com/ollo12-prog/claude-usage
 claude-usage dashboard
 ```
 
-Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/phuryn/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps (#144).
+Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/ollo12-prog/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps (#144).
 
 ### macOS / Linux (clone)
 ```
@@ -76,7 +76,7 @@ python cli.py dashboard
 
 ### Docker
 ```
-git clone https://github.com/phuryn/claude-usage
+git clone https://github.com/ollo12-prog/claude-usage
 cd claude-usage
 bash scripts/run-docker.sh
 ```
@@ -167,6 +167,6 @@ Costs are calculated using **Anthropic API pricing as of June 2026** ([claude.co
 | `scanner.py` | Parses JSONL transcripts, writes to `~/.claude/usage.db` |
 | `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
 | `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
-| `Formula/claude-usage.rb` | Homebrew formula — install with `brew tap phuryn/claude-usage` then `brew install phuryn/claude-usage/claude-usage` |
+| `Formula/claude-usage.rb` | Homebrew formula — install with `brew tap ollo12-prog/claude-usage` then `brew install ollo12-prog/claude-usage/claude-usage` |
 | `Dockerfile` | Container image definition |
 | `scripts/run-docker.sh` | Build and run the dashboard in Docker with a read-only `~/.claude` mount |

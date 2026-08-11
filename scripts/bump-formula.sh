@@ -24,7 +24,7 @@ set -euo pipefail
 #
 # See AGENTS.md "Homebrew formula and self-referential SHA".
 
-REPO_SLUG="phuryn/claude-usage"
+REPO_SLUG="ollo12-prog/claude-usage"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FORMULA="$REPO_DIR/Formula/claude-usage.rb"
 

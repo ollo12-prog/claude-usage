@@ -1,16 +1,20 @@
 class ClaudeUsage < Formula
   desc "Token, cost, and session dashboard for Claude Code usage"
-  homepage "https://github.com/phuryn/claude-usage"
+  homepage "https://github.com/ollo12-prog/claude-usage"
   # Pinned to the PREVIOUS release's tag tarball, never this formula's own
   # release: the formula ships inside the repo it installs, so a self-pointing
   # sha256 would be uncomputable (the tarball would contain this very hash).
   # It therefore tracks one release behind by design — bump to the prior tag
   # each release. See AGENTS.md "Homebrew formula and self-referential SHA".
+  #
+  # TRANSITIONAL: still pinned at upstream phuryn/claude-usage v1.5.4 because
+  # this fork had no tags of its own to point at. Run scripts/bump-formula.sh
+  # once v1.5.6 is tagged to move the pin onto this fork's own release.
   url "https://github.com/phuryn/claude-usage/archive/refs/tags/v1.5.4.tar.gz"
   version "1.5.4"
   sha256 "c43337fa785e4e78ecdb6da3ab5b1cb7aa780aad8096790fdf3a152441be5550"
   license "MIT"
-  head "https://github.com/phuryn/claude-usage.git", branch: "main"
+  head "https://github.com/ollo12-prog/claude-usage.git", branch: "main"
 
   depends_on "python@3.13"
 
