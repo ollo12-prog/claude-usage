@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Packaging
+
+- Homebrew formula now points at this fork's own `v1.5.6` tarball; it was pinned to upstream's `v1.5.4`, so `brew install` served upstream code.
+- `pyproject.toml` Homepage/Issues point at this fork, with upstream kept as a separate `Upstream` link.
+
+### Dashboard
+
+- Stat cards fit one row: the 8th card wrapped at any window size because 8 cards at the 160px minimum exceeded the 1352px container.
+- Pricing "as of" date is August 2026; the rates were already current.
+
+### Project / docs
+
+- Documented the release flow this fork uses (work lands on `main`), including that a `## vX.Y.Z` heading must not reach `main` before you intend to release — the tag workflow would publish it.
+- Removed upstream's `/triage` routine and its Windows Task Scheduler helpers: inoperable here (no `DEV` branch, no inbound PRs) and able to push to public `main`.
+- `.claude/launch.json` uses `python3` so the dev preview works on macOS and Linux.
+- `.claude/settings.json` denies the `claude-api` skill, which matches every task here and costs ~167k tokens of context for an API this repo never calls.
+
 ## v1.5.6 — 2026-08-11
 
 ### Pricing

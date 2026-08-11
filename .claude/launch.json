@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "claude-usage-dashboard",
-      "runtimeExecutable": "python",
+      "runtimeExecutable": "python3",
       "runtimeArgs": ["dashboard.py"],
       "port": 8080
     }

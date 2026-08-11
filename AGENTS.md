@@ -114,8 +114,8 @@ This applies to all agents working on this repo, not just Claude Code.
 Work lands directly on `main`; this fork has no `DEV` branch.
 
 The release flow:
-1. **Do not put a version heading on `main` before you intend to release.** The tag workflow's regex matches `## vX.Y.Z` followed by whitespace, so a `— TBD` heading counts and would tag and publish an unfinished release the moment it lands. (`tests/test_version.py` also fails while a heading and `scanner.VERSION` disagree, so a stray heading can't pass CI either.) Let unreleased changes sit without a heading; add the heading in the release commit.
-2. To release: add the `## vX.Y.Z — YYYY-MM-DD` heading with its bullets and set `scanner.VERSION` to the same version in the same commit. `scanner.VERSION` is what `cli.py --version` and the dashboard footer report.
+1. Accumulate bullets under a plain `## Unreleased` heading. **Never use `## vX.Y.Z — TBD` here:** the tag workflow's regex matches `## vX.Y.Z` followed by whitespace, so a `TBD` heading would tag and publish an unfinished release the moment it lands on `main`. `## Unreleased` is safe on both counts — the workflow ignores it, and `tests/test_version.py` skips it when looking for the top `## vX.Y.Z` heading to compare against `scanner.VERSION`.
+2. To release: rename `## Unreleased` to `## vX.Y.Z — YYYY-MM-DD` and set `scanner.VERSION` to that version in the same commit — `tests/test_version.py` fails while the two disagree. `scanner.VERSION` is what `cli.py --version` and the dashboard footer report.
 3. Push `main`. [`.github/workflows/tag-on-merge.yml`](.github/workflows/tag-on-merge.yml) sees the new `## vX.Y.Z` heading in the push's CHANGELOG diff and creates the tag plus a GitHub Release with that section as the notes. There is no manual `git tag` step.
 4. After the tag exists, run [`scripts/bump-formula.sh`](scripts/bump-formula.sh) to repoint the Homebrew formula at it, and push. See "Homebrew formula and self-referential SHA" below.
 
@@ -126,7 +126,7 @@ The workflow is idempotent: it no-ops if the tag or Release already exists, and 
 The workflow trusts the CHANGELOG, so the format matters. Every new release entry follows this exact shape:
 
 ```
-## vX.Y.Z — TBD
+## vX.Y.Z — YYYY-MM-DD
 
 ### <Area>
 
@@ -139,11 +139,11 @@ Format rules the workflow relies on:
 |---|---|---|
 | Heading | `## vX.Y.Z` (exactly two `#`, the `v` prefix, three numeric components — strict semver) | The workflow regex `^## v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)` won't match anything else. `v1.1`, `v1.1.0-rc1`, `V1.1.0` are all silently ignored. |
 | Separator | ` — ` (em-dash with surrounding spaces) | Cosmetic but consistent. The workflow ignores everything after the version. |
-| Date | `TBD` while accumulating; replace with `YYYY-MM-DD` *in the release commit* | The workflow doesn't enforce dates — but a `TBD` heading that ships to main means the release looks unfinished forever. |
+| Date | `YYYY-MM-DD`, written when `## Unreleased` becomes a version heading | The workflow ignores everything after the version, so a wrong or placeholder date ships silently and stays. |
 | Subsections | `### Dashboard`, `### Scanner`, `### Packaging`, `### Project / docs` — pick the smallest set that fits | Keeps the CHANGELOG scannable. |
 | Bullets | Past tense, credit external contributors with `thanks @login`. Bare `#N` only for this fork's own PRs/issues; write upstream ones as `phuryn/claude-usage#N` | A bare `#N` resolves against this repo, so an upstream number silently links to something unrelated. |
 
-**The TBD → date rule is the only step a human must remember at release time.** If you forget, the workflow still tags correctly, but the CHANGELOG entry on main reads `## v1.1.3 — TBD` forever. Fix-up commit can correct it, but it'll feel sloppy.
+**Renaming `## Unreleased` and bumping `scanner.VERSION` is the one manual step at release time.** The parity test catches a forgotten `scanner.VERSION`; nothing catches a wrong date.
 
 Patch (`Z`) is the default. Bump minor (`Y`) when a non-breaking user-visible feature lands, major (`X`) only on breaking changes. Nothing automates the choice; whoever writes the CHANGELOG heading decides.
 
