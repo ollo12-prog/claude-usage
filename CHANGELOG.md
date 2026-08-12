@@ -9,6 +9,16 @@
 
 ### Dashboard
 
+- **Mixed-model sessions are no longer overcharged.** The `sessions` table stores a
+  single primary-model label (opus > sonnet > haiku), and every session-derived cost
+  priced that label against the session's *summed* tokens — so a session whose
+  subagents ran on Haiku had those tokens billed at Opus rates. A real 902-turn
+  session (684 Opus 5 + 218 Haiku 4.5) reported **$91.5232** instead of **$83.4677**,
+  9.6% high. Sessions now carry a per-model token breakdown (`by_model`) and are
+  priced per model and summed, matching the per-turn rule the CLI already followed.
+  Affects the sessions table and CSV, session drilldown, cost totals, hot-session
+  signals, cost sort/filter, and the Projects and Branches tables. Per-model and
+  daily figures were already correct.
 - Stat cards fit one row: the 8th card wrapped at any window size because 8 cards at the 160px minimum exceeded the 1352px container.
 - Pricing "as of" date is August 2026; the rates were already current.
 

@@ -15,6 +15,39 @@ from scanner import VERSION, init_db
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
 
+def _session_model_breakdowns(conn):
+    """Return ``{session_id: [{model, input, output, cache_read, cache_creation}]}``
+    — each session's tokens split by the model that actually produced them.
+
+    Cost must be computed per model and summed: the ``sessions`` table stores a
+    single primary-model label (opus > sonnet > haiku), so pricing a session's
+    summed tokens by that one label overcharges every session that touched more
+    than one model — a subagent on a cheaper model, or a mid-session /model
+    switch. The client attaches this to each session as ``by_model``.
+    """
+    rows = conn.execute("""
+        SELECT session_id,
+               COALESCE(NULLIF(model, ''), 'unknown') as model,
+               SUM(input_tokens)          as input,
+               SUM(output_tokens)         as output,
+               SUM(cache_read_tokens)     as cache_read,
+               SUM(cache_creation_tokens) as cache_creation
+        FROM turns
+        GROUP BY session_id, COALESCE(NULLIF(model, ''), 'unknown')
+    """).fetchall()
+
+    out = {}
+    for r in rows:
+        out.setdefault(r["session_id"], []).append({
+            "model":          r["model"],
+            "input":          r["input"] or 0,
+            "output":         r["output"] or 0,
+            "cache_read":     r["cache_read"] or 0,
+            "cache_creation": r["cache_creation"] or 0,
+        })
+    return out
+
+
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
@@ -139,6 +172,8 @@ def get_dashboard_data(db_path=DB_PATH):
         ORDER BY s.last_timestamp DESC
     """).fetchall()
 
+    session_by_model = _session_model_breakdowns(conn)
+
     sessions_all = []
     for r in session_rows:
         try:
@@ -163,6 +198,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "output":        r["total_output_tokens"] or 0,
             "cache_read":    r["total_cache_read"] or 0,
             "cache_creation": r["total_cache_creation"] or 0,
+            "by_model":      session_by_model.get(r["session_id"], []),
         })
 
     # ── Subagent breakdown by type, by day & model ────────────────────────────
@@ -1199,6 +1235,33 @@ function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation) {
   return { input, output, cache_read, cache_creation, total: input + output + cache_read + cache_creation, cache_savings };
 }
 
+// Cost breakdown for a whole session, summed across the models its turns actually
+// used (s.by_model from the server). Pricing a session by its single `model` label
+// x summed tokens overcharges any multi-model session (a subagent on a cheaper
+// model, or a mid-session /model switch). Falls back to the single-model path when
+// no breakdown is present (older payloads, or non-session rows).
+function sessionCostBreakdown(s) {
+  const bm = s && s.by_model;
+  if (Array.isArray(bm) && bm.length) {
+    return bm.reduce((acc, m) => {
+      const c = calcCostBreakdown(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+      acc.input += c.input;
+      acc.output += c.output;
+      acc.cache_read += c.cache_read;
+      acc.cache_creation += c.cache_creation;
+      acc.total += c.total;
+      acc.cache_savings += c.cache_savings;
+      return acc;
+    }, { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0 });
+  }
+  return calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+}
+
+// Total $ cost of a session, priced per-model (see sessionCostBreakdown).
+function sessionCost(s) {
+  return sessionCostBreakdown(s).total;
+}
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 function fmt(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2)+'B';
@@ -1578,7 +1641,7 @@ function applySessionFilters(sessions) {
     if (sessionFilters.branch && !(s.branch || '').toLowerCase().includes(sessionFilters.branch)) return false;
     if (sessionFilters.tool && !(s.tools || []).includes(sessionFilters.tool)) return false;
     if (sessionFilters.hasCacheCreation && !(s.cache_creation > 0)) return false;
-    if (sessionFilters.minCost && calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation) < sessionFilters.minCost) return false;
+    if (sessionFilters.minCost && sessionCost(s) < sessionFilters.minCost) return false;
     return true;
   });
 }
@@ -1625,8 +1688,8 @@ function sortSessions(sessions) {
   return [...sessions].sort((a, b) => {
     let av, bv;
     if (sessionSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+      av = sessionCost(a);
+      bv = sessionCost(b);
     } else if (sessionSortCol === 'duration_min') {
       av = parseFloat(a.duration_min) || 0;
       bv = parseFloat(b.duration_min) || 0;
@@ -1642,7 +1705,7 @@ function sortSessions(sessions) {
 
 function aggregateCostBreakdown(rows) {
   return rows.reduce((acc, r) => {
-    const c = calcCostBreakdown(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    const c = sessionCostBreakdown(r);
     acc.input += c.input;
     acc.output += c.output;
     acc.cache_read += c.cache_read;
@@ -1657,7 +1720,7 @@ function aggregateCostBreakdown(rows) {
 
 function sessionSignals(sessions) {
   return sessions.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = sessionCost(s);
     const minutes = Math.max(parseFloat(s.duration_min) || 0, 1 / 60);
     const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
     const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
@@ -1732,7 +1795,7 @@ function applyFilter() {
     p.cache_creation += s.cache_creation;
     p.turns          += s.turns;
     p.sessions++;
-    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    p.cost += sessionCost(s);
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
@@ -1748,7 +1811,7 @@ function applyFilter() {
     pb.cache_creation += s.cache_creation;
     pb.turns          += s.turns;
     pb.sessions++;
-    pb.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    pb.cost += sessionCost(s);
   }
   const byProjectBranch = Object.values(projBranchMap).sort((a, b) => b.cost - a.cost);
 
@@ -2202,7 +2265,7 @@ function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatch
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = sessionCost(s);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -2331,7 +2394,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeToolPan
 function renderSessionDetail(d) {
   selectedSessionDetail = d;
   const s = d.session;
-  const c = calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+  const c = sessionCostBreakdown({ model: s.model, by_model: d.turns });
   const tokens = (s.input || 0) + (s.output || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
   const promptTokens = (s.input || 0) + (s.cache_read || 0) + (s.cache_creation || 0);
   document.getElementById('dashboard-view').classList.add('hidden');
@@ -2664,7 +2727,7 @@ function exportModelCSV() {
 function exportSessionsCSV() {
   const header = ['Session', 'Project', 'Title', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = sessionCost(s);
     return [s.full_session_id, s.project, s.topic, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
