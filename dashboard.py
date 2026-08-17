@@ -1778,12 +1778,15 @@ function applyFilter() {
   // By model: aggregate tokens + turns from daily data
   const modelMap = {};
   for (const r of filteredDaily) {
-    if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0 };
+    if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, cache_creation_1h: 0, turns: 0, sessions: 0 };
     const m = modelMap[r.model];
     m.input          += r.input;
     m.output         += r.output;
     m.cache_read     += r.cache_read;
     m.cache_creation += r.cache_creation;
+    // Must carry the 1h split too: every byModel consumer prices with it, and an
+    // undefined field silently falls back to the 5m rate (see calcCostBreakdown).
+    m.cache_creation_1h += r.cache_creation_1h || 0;
     m.turns          += r.turns;
   }
 

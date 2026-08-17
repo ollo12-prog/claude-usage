@@ -679,5 +679,26 @@ class TestMixedModelSessionCost(unittest.TestCase):
                          "a session breakdown is still priced by its single primary-model label")
 
 
+class TestByModelCarriesThe1hSplit(unittest.TestCase):
+    """Every consumer of byModel prices with `m.cache_creation_1h` — the overview
+    Est. Cost card, the cost-by-model table, the CSV export. If the aggregator
+    never accumulates that field it arrives `undefined`, calcCostBreakdown's
+    default silently prices the whole thing at the 5m rate, and the dashboard
+    reports less than it costs (measured: $2,892.66 against $3,037.05 over one
+    7-day window). Source-level guard — the aggregation lives inside a large JS
+    function with no seam to call.
+    """
+
+    def test_model_aggregator_accumulates_the_1h_split(self):
+        head, _, tail = HTML_TEMPLATE.partition("const modelMap = {};")
+        self.assertTrue(tail, "modelMap aggregation not found in dashboard JS")
+        block = tail[:tail.index("\n  }")]
+        self.assertIn("cache_creation_1h: 0", block,
+                      "modelMap rows start without a cache_creation_1h field")
+        self.assertIn("m.cache_creation_1h +=", block,
+                      "modelMap never accumulates cache_creation_1h — every byModel "
+                      "cost falls back to the 5m cache-write rate")
+
+
 if __name__ == "__main__":
     unittest.main()
