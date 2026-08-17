@@ -26,6 +26,18 @@ DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 # Fable / Mythos are Anthropic's most capable class, so they outrank Opus.
 MODEL_PRIORITY = {"fable": 5, "mythos": 5, "opus": 3, "sonnet": 2, "haiku": 1}
 
+# Synthetic message_id prefix for turns minted from `usage.iterations[]` entries
+# of type 'advisor_message' (see parse_jsonl_file). Doubles as the marker that
+# keeps those turns out of the session's primary-model vote — matched on the id
+# rather than tool_name so a user's own tool named "advisor" can't be mistaken
+# for one.
+ADVISOR_ID_PREFIX = "advisor:"
+
+
+def is_advisor_turn(turn):
+    """True if this turn was minted from an advisor_message iteration."""
+    return (turn.get("message_id") or "").startswith(ADVISOR_ID_PREFIX)
+
 
 def _model_priority(model):
     """Return a priority score for a model name (higher = more capable)."""
@@ -442,6 +454,49 @@ def parse_jsonl_file(filepath):
                     else:
                         turns_no_id.append(turn)
 
+                    # An `advisor` tool call is a SEPARATE inference on a different
+                    # (usually stronger) model, carried inside this assistant message
+                    # as an extra `usage.iterations[]` entry of type
+                    # 'advisor_message'; the model is named by the record's
+                    # top-level `advisorModel`. The envelope's top-level
+                    # input/output_tokens count ONLY the 'message' iterations, so
+                    # those tokens are invisible there and the whole advisor spend
+                    # goes unbilled. (cache_read / cache_creation are already
+                    # totals — advisor iterations carry none.)
+                    #
+                    # Each one becomes its own turn rather than extra columns: a
+                    # turn is already "one inference on one model" and cost is
+                    # computed per turn, so the advisor's own rate flows through
+                    # every existing query with no call-site change. The synthetic
+                    # message_id keeps rescans and branch copies idempotent.
+                    for idx, it in enumerate(usage.get("iterations") or []):
+                        if not isinstance(it, dict) or it.get("type") != "advisor_message":
+                            continue
+                        adv_in = it.get("input_tokens", 0) or 0
+                        adv_out = it.get("output_tokens", 0) or 0
+                        if adv_in + adv_out == 0:
+                            continue
+                        adv_turn = dict(
+                            turn,
+                            # advisorModel is the authority; fall back to the parent
+                            # model so an unnamed advisor is priced, not free.
+                            model=record.get("advisorModel") or model,
+                            input_tokens=adv_in,
+                            output_tokens=adv_out,
+                            cache_read_tokens=it.get("cache_read_input_tokens", 0) or 0,
+                            cache_creation_tokens=it.get("cache_creation_input_tokens", 0) or 0,
+                            tool_name="advisor",
+                            message_id="%s%s:%d" % (ADVISOR_ID_PREFIX, message_id, idx),
+                        )
+                        if message_id:
+                            seen_messages[adv_turn["message_id"]] = adv_turn
+                        else:
+                            # No parent id to key on: the synthetic id would collide
+                            # across messages, so follow the parent into the
+                            # un-deduped list rather than dropping all but one.
+                            adv_turn["message_id"] = ""
+                            turns_no_id.append(adv_turn)
+
     except Exception as e:
         print(f"  Warning: error reading {filepath}: {e}")
 
@@ -470,7 +525,11 @@ def aggregate_sessions(session_metas, turns):
         s["total_cache_read"] += t["cache_read_tokens"]
         s["total_cache_creation"] += t["cache_creation_tokens"]
         s["turn_count"] += 1
-        if t["model"]:
+        # Advisor turns don't vote for the session's primary model: they are an
+        # auxiliary inference on a different model, and fable outranks opus in
+        # MODEL_PRIORITY, so one advisor call would otherwise relabel an entire
+        # Opus session as Fable.
+        if t["model"] and not is_advisor_turn(t):
             session_model_counts[t["session_id"]][t["model"]] += 1
 
     for sid, counts in session_model_counts.items():
@@ -599,6 +658,19 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     # schema_meta 'topic_backfill_done' marker. It runs before the main loop, so
     # on a fresh DB the sessions table is still empty and this no-ops; only DBs
     # with pre-existing untitled sessions do real work.
+    # Advisor turns are NEW rows, so no in-place UPDATE can add them, and the walk
+    # below skips files whose mtime is unchanged — an existing database would
+    # silently keep its pre-fix undercount forever. Clear processed_files exactly
+    # once so the next walk re-reads everything. Safe to repeat: turn inserts are
+    # INSERT OR IGNORE against the unique message_id index and session totals are
+    # recomputed from `turns` afterwards; it is only slow, hence the marker.
+    if _meta_get(conn, "advisor_reparse_done") != "1":
+        cleared = conn.execute("DELETE FROM processed_files").rowcount
+        _meta_set(conn, "advisor_reparse_done", "1")
+        conn.commit()
+        if verbose and cleared:
+            print(f"One-time re-parse of {cleared} transcript(s) to pick up advisor turns.")
+
     if _meta_get(conn, "topic_backfill_done") != "1":
         filled = _backfill_topics(conn, jsonl_files)
         _meta_set(conn, "topic_backfill_done", "1")
