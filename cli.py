@@ -23,8 +23,8 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 # ponytail: one dated model, so one dated constant — if a second model ever needs
 # this, replace it with an effective-dated tier list rather than a second special case.
 SONNET_5_INTRO_ENDS = date(2026, 8, 31)
-SONNET_5_INTRO    = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50}
-SONNET_5_STANDARD = {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75}
+SONNET_5_INTRO    = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50, "cache_write_1h": 4.00}
+SONNET_5_STANDARD = {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00}
 
 def sonnet_5_pricing(day=None):
     """Sonnet 5 rate active on `day` (a date; defaults to today)."""
@@ -33,22 +33,22 @@ def sonnet_5_pricing(day=None):
 PRICING = {
     # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
-    "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
-    "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
+    "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
+    "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
     # Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
     # "opus" substring fallback so it stays pinned if the 4.x rates ever diverge.
-    "claude-opus-5":     {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-8":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-opus-5":     {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
+    "claude-opus-4-8":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
+    "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
+    "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
+    "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
     "claude-sonnet-5":   sonnet_5_pricing(),
-    "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-haiku-4-7":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
-    "claude-haiku-4-6":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
-    "claude-haiku-4-5":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+    "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
+    "claude-haiku-4-7":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
+    "claude-haiku-4-6":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
+    "claude-haiku-4-5":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
 }
 
 def get_pricing(model):
@@ -71,16 +71,30 @@ def get_pricing(model):
         return PRICING["claude-haiku-4-5"]
     return None
 
-def calc_cost(model, inp, out, cache_read, cache_creation):
+def calc_cost(model, inp, out, cache_read, cache_creation, cache_creation_1h=0):
+    """Cost of one turn. `cache_creation` is the TOTAL cache-write tokens;
+    `cache_creation_1h` is the portion written with a 1-hour TTL, which bills at
+    2x input instead of the 5-minute 1.25x. Defaulting it to 0 prices everything
+    at the 5m rate — correct for rows recorded before the split was stored."""
     p = get_pricing(model)
     if not p:
         return 0.0
+    # The 1h portion can never exceed the total it is part of.
+    cc_1h = min(cache_creation_1h or 0, cache_creation or 0)
     return (
-        inp            * p["input"]       / 1_000_000 +
-        out            * p["output"]      / 1_000_000 +
-        cache_read     * p["cache_read"]  / 1_000_000 +
-        cache_creation * p["cache_write"] / 1_000_000
+        inp                         * p["input"]       / 1_000_000 +
+        out                         * p["output"]      / 1_000_000 +
+        cache_read                  * p["cache_read"]  / 1_000_000 +
+        (cache_creation - cc_1h)    * p["cache_write"] / 1_000_000 +
+        cc_1h * p.get("cache_write_1h", p["cache_write"]) / 1_000_000
     )
+
+
+def row_cost(r):
+    """Cost of one aggregated query row. Every cli query selects the same column
+    aliases (inp/out/cr/cc/cc1h), so the 1h split is applied in one place."""
+    return calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0,
+                     r["cc"] or 0, r["cc1h"] or 0)
 
 def fmt(n):
     if n >= 1_000_000:
@@ -130,6 +144,7 @@ def cmd_today():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) = ?
@@ -166,7 +181,7 @@ def cmd_today():
     total_cost = 0.0
 
     for r in rows:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = row_cost(r)
         total_cost += cost
         total_inp += r["inp"] or 0
         total_out += r["out"] or 0
@@ -203,6 +218,7 @@ def cmd_week():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
@@ -216,6 +232,7 @@ def cmd_week():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
@@ -248,7 +265,7 @@ def cmd_week():
         bucket["turns"] += r["turns"]
         bucket["inp"]   += r["inp"] or 0
         bucket["out"]   += r["out"] or 0
-        bucket["cost"]  += calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        bucket["cost"]  += row_cost(r)
 
     print("  By Day:")
     for i in range(7):
@@ -262,7 +279,7 @@ def cmd_week():
     total_inp = total_out = total_cr = total_cc = total_turns = 0
     total_cost = 0.0
     for r in by_model:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = row_cost(r)
         total_cost  += cost
         total_inp   += r["inp"] or 0
         total_out   += r["out"] or 0
@@ -301,6 +318,7 @@ def cmd_stats():
             SUM(output_tokens)            as out,
             SUM(cache_read_tokens)        as cr,
             SUM(cache_creation_tokens)    as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                      as turns
         FROM turns
     """).fetchone()
@@ -313,6 +331,7 @@ def cmd_stats():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns,
             COUNT(DISTINCT session_id) as sessions
         FROM turns
@@ -362,7 +381,7 @@ def cmd_stats():
 
     # Build total cost across all models
     total_cost = sum(
-        calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        row_cost(r)
         for r in by_model
     )
 
@@ -389,7 +408,7 @@ def cmd_stats():
 
     print("  By Model:")
     for r in by_model:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = row_cost(r)
         print(f"    {r['model']:<30}  sessions={r['sessions']:<4}  turns={fmt(r['turns'] or 0):<6}  "
               f"in={fmt(r['inp'] or 0):<8}  out={fmt(r['out'] or 0):<8}  cost={fmt_cost(cost)}")
 

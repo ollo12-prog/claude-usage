@@ -22,6 +22,19 @@ XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAs
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
+# Synthetic message_id prefix for turns minted from `usage.iterations[]` entries
+# of type 'advisor_message' (see parse_jsonl_file). Doubles as the marker that
+# keeps those turns out of the session's primary-model vote — matched on the id
+# rather than tool_name so a user's own tool named "advisor" can't be mistaken
+# for one.
+ADVISOR_ID_PREFIX = "advisor:"
+
+
+def is_advisor_turn(turn):
+    """True if this turn was minted from an advisor_message iteration."""
+    return (turn.get("message_id") or "").startswith(ADVISOR_ID_PREFIX)
+
+
 # Higher number = higher priority when choosing a session's primary model.
 # Fable / Mythos are Anthropic's most capable class, so they outrank Opus.
 MODEL_PRIORITY = {"fable": 5, "mythos": 5, "opus": 3, "sonnet": 2, "haiku": 1}
@@ -512,6 +525,54 @@ def parse_jsonl_file(filepath):
                     else:
                         turns_no_id.append(turn)
 
+                    # Advisor inferences run *inside* an assistant message as extra
+                    # `usage.iterations[]` entries of type 'advisor_message', on a
+                    # different (usually stronger) model named by the record's
+                    # top-level `advisorModel`. The envelope's top-level
+                    # input/output_tokens count ONLY the 'message' iterations, so
+                    # advisor tokens are invisible there — a silent undercount of the
+                    # entire advisor spend. (cache_read / cache_creation are already
+                    # totals; advisor iterations carry none.)
+                    #
+                    # Each one becomes its own turn rather than extra columns: a turn
+                    # is already "one inference on one model", and cost is computed
+                    # per turn from that turn's model, so the advisor model is priced
+                    # correctly by every existing query with no call-site change. The
+                    # synthetic message_id keeps re-scans and branch copies idempotent.
+                    for idx, it in enumerate(usage.get("iterations") or []):
+                        if not isinstance(it, dict) or it.get("type") != "advisor_message":
+                            continue
+                        adv_in = it.get("input_tokens", 0) or 0
+                        adv_out = it.get("output_tokens", 0) or 0
+                        if adv_in + adv_out == 0:
+                            continue
+                        adv_turn = dict(
+                            turn,
+                            # advisorModel is the authority; fall back to the parent
+                            # model so an unnamed advisor is priced, not free (older
+                            # Claude Code builds emit iterations without advisorModel).
+                            model=record.get("advisorModel") or model,
+                            input_tokens=adv_in,
+                            output_tokens=adv_out,
+                            cache_read_tokens=it.get("cache_read_input_tokens", 0) or 0,
+                            cache_creation_tokens=it.get("cache_creation_input_tokens", 0) or 0,
+                            cache_creation_5m_tokens=0,
+                            cache_creation_1h_tokens=0,
+                            tool_name="advisor",
+                            tool_calls=None,
+                            message_id="%s%s:%d" % (ADVISOR_ID_PREFIX, message_id, idx),
+                        )
+                        # is_sidechain / is_subagent are inherited on purpose: advisor
+                        # cost is main-chain cost when the parent is.
+                        if message_id:
+                            seen_messages[adv_turn["message_id"]] = adv_turn
+                        else:
+                            # No parent id to key on: the synthetic id would collide
+                            # across messages, so follow the parent into the
+                            # un-deduped list rather than dropping all but one.
+                            adv_turn["message_id"] = ""
+                            turns_no_id.append(adv_turn)
+
     except Exception as e:
         print(f"  Warning: error reading {filepath}: {e}")
 
@@ -540,7 +601,11 @@ def aggregate_sessions(session_metas, turns):
         s["total_cache_read"] += t["cache_read_tokens"]
         s["total_cache_creation"] += t["cache_creation_tokens"]
         s["turn_count"] += 1
-        if t["model"]:
+        # Advisor turns don't vote for the session's primary model: they're an
+        # auxiliary inference on a different model, and in a short session with
+        # several advisor calls they could otherwise outvote the model the session
+        # actually ran on.
+        if t["model"] and not is_advisor_turn(t):
             session_model_counts[t["session_id"]][t["model"]] += 1
 
     for sid, counts in session_model_counts.items():
@@ -691,6 +756,19 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     # a projects directory was actually found and scanned — otherwise (e.g. the
     # dir is transiently unmounted) a later scan retries instead of permanently
     # skipping the backfill.
+    # Advisor turns are NEW rows, so no in-place UPDATE can add them, and the
+    # incremental walk below skips files whose mtime is unchanged — an existing DB
+    # would silently keep its pre-fix undercount forever. Clear processed_files
+    # exactly once so the next walk re-reads everything. Safe to repeat: turn
+    # inserts are INSERT OR IGNORE against the unique message_id index and session
+    # totals are recomputed from `turns` afterwards; it is only slow, hence the marker.
+    if any_dir_found and _meta_get(conn, "advisor_reparse_done") != "1":
+        cleared = conn.execute("DELETE FROM processed_files").rowcount
+        _meta_set(conn, "advisor_reparse_done", "1")
+        conn.commit()
+        if verbose and cleared:
+            print(f"One-time re-parse of {cleared} transcript(s) to pick up advisor turns.")
+
     if any_dir_found and _meta_get(conn, "topic_backfill_done") != "1":
         filled = _backfill_topics(conn, jsonl_files)
         _meta_set(conn, "topic_backfill_done", "1")

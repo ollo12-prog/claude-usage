@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Cost accuracy
+
+- **Advisor calls were billed at $0.** An `advisor` tool call is a separate
+  inference on a different (usually stronger) model, carried inside the parent
+  assistant message as a `usage.iterations[]` entry of type `advisor_message`,
+  with the model named by the record's top-level `advisorModel`. The envelope's
+  top-level `input_tokens`/`output_tokens` count **only** the `message`
+  iterations, so every advisor token was invisible to the scanner. Two real
+  Opus 5 sessions reported **$12.74** against Claude Code's own
+  `total_cost_usd` of **$21.35** — a 40% undercount, of which ~$7.86 was
+  advisor spend on Fable 5. Each advisor iteration is now recorded as its own
+  turn (synthetic `advisor:<message_id>:<idx>` id, priced at the advisor's own
+  model), so the existing per-turn cost rule prices it correctly everywhere.
+- **1-hour cache writes were priced as 5-minute writes.** Cache creation with a
+  1h TTL bills at 2x input, not the 5m 1.25x. The 5m/1h split was already
+  recorded but never used; the pricing tables gain `cache_write_1h` and the cost
+  formula applies it to the 1h portion. Worth ~$0.72 of the same gap. Rows with
+  no split recorded still price at the 5m rate, which is correct for them.
+  After both fixes the two sessions reconcile to $14.89 / $6.43.
+- Advisor turns are excluded from the session primary-model vote. Fable outranks
+  Opus in `MODEL_PRIORITY`, so without this a single advisor call relabeled an
+  entire Opus session as Fable 5 (214 sessions in one real database).
+- Existing databases re-parse their transcripts **once** on the next scan
+  (`advisor_reparse_done` marker). Advisor turns are new rows, and the
+  incremental walk skips unchanged files, so an upgraded database would
+  otherwise keep the old undercount forever. Repeating the re-parse is harmless
+  — turn inserts are `INSERT OR IGNORE` against the unique `message_id` index.
+- The Pricing editor gains a **Cache Write 1h** column, editable like the other
+  rates for models that have one and `n/a` for those that don't (the OpenAI-style
+  entries have no 1h tier).
+
 ### Packaging
 
 - Homebrew formula now points at this fork's own `v1.5.6` tarball; it was pinned to upstream's `v1.5.4`, so `brew install` served upstream code.

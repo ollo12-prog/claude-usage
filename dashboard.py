@@ -31,7 +31,8 @@ def _session_model_breakdowns(conn):
                SUM(input_tokens)          as input,
                SUM(output_tokens)         as output,
                SUM(cache_read_tokens)     as cache_read,
-               SUM(cache_creation_tokens) as cache_creation
+               SUM(cache_creation_tokens) as cache_creation,
+               SUM(cache_creation_1h_tokens) as cache_creation_1h
         FROM turns
         GROUP BY session_id, COALESCE(NULLIF(model, ''), 'unknown')
     """).fetchall()
@@ -44,6 +45,7 @@ def _session_model_breakdowns(conn):
             "output":         r["output"] or 0,
             "cache_read":     r["cache_read"] or 0,
             "cache_creation": r["cache_creation"] or 0,
+            "cache_creation_1h": r["cache_creation_1h"] or 0,
         })
     return out
 
@@ -87,6 +89,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(output_tokens)         as output,
             SUM(cache_read_tokens)     as cache_read,
             SUM(cache_creation_tokens) as cache_creation,
+            SUM(cache_creation_1h_tokens) as cache_creation_1h,
             COUNT(*)                   as turns
         FROM turns
         GROUP BY day, COALESCE(NULLIF(model, ''), 'unknown')
@@ -100,6 +103,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
@@ -136,6 +140,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(output_tokens)              as output,
             SUM(cache_read_tokens)          as cache_read,
             SUM(cache_creation_tokens)      as cache_creation,
+            SUM(cache_creation_1h_tokens)      as cache_creation_1h,
             COUNT(*)                        as turns
         FROM turns
         GROUP BY day, model, tool
@@ -150,6 +155,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "turns":          r["turns"] or 0,
     } for r in tool_rows]
 
@@ -220,6 +226,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(t.output_tokens)                     as output,
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
+            SUM(t.cache_creation_1h_tokens)            as cache_creation_1h,
             COUNT(DISTINCT t.agent_id)               as dispatches,
             COUNT(*)                                 as turns
         FROM turns t
@@ -237,6 +244,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "dispatches":     r["dispatches"] or 0,
         "turns":          r["turns"] or 0,
     } for r in subagent_daily_rows]
@@ -253,6 +261,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(t.output_tokens)                     as output,
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
+            SUM(t.cache_creation_1h_tokens)            as cache_creation_1h,
             COUNT(*)                                 as turns,
             a.dispatched_in_session                  as parent_session,
             a.total_duration_ms                      as duration_ms,
@@ -277,6 +286,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "turns":          r["turns"] or 0,
         "duration_ms":    r["duration_ms"],
         "tool_uses":      r["tool_uses"],
@@ -786,7 +796,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th>Input</th>
         <th>Output</th>
         <th>Cache Read</th>
-        <th>Cache Creation</th>
+        <th title="Cache creation, 5-minute TTL (1.25x input)">Cache Write 5m</th>
+        <th title="Cache creation, 1-hour TTL (2x input)">Cache Write 1h</th>
         <th>Source</th>
       </tr></thead>
       <tbody id="pricing-body"></tbody>
@@ -1094,31 +1105,31 @@ const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
 const DEFAULT_PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
-  'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
-  'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
+  'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
+  'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
   // Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
   // 'opus' substring fallback so it stays pinned if the 4.x rates ever diverge.
-  'claude-opus-5':     { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
+  'claude-opus-5':     { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
+  'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
+  'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
+  'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
+  'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
   // Sonnet 5's introductory rate expires; see SONNET_5_* below (must stay in sync
   // with cli.py's sonnet_5_pricing). Placeholder — overwritten at load.
-  'claude-sonnet-5':   { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
-  'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
-  'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
-  'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
-  'claude-haiku-4-7':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
-  'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
-  'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
+  'claude-sonnet-5':   { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  'claude-haiku-4-7':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
+  'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
+  'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
 };
 // Sonnet 5 launched on an introductory rate that expires; after that it bills at
 // the standard Sonnet rate. Resolved once at load against today's local date.
 // Keep in sync with cli.py's SONNET_5_* / sonnet_5_pricing().
 const SONNET_5_INTRO_ENDS = '2026-08-31';
-const SONNET_5_INTRO    = { input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.20 };
-const SONNET_5_STANDARD = { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 };
+const SONNET_5_INTRO    = { input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.20, cache_write_1h: 4.00 };
+const SONNET_5_STANDARD = { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30, cache_write_1h: 6.00 };
 DEFAULT_PRICING['claude-sonnet-5'] =
   localISODate(new Date()) <= SONNET_5_INTRO_ENDS ? SONNET_5_INTRO : SONNET_5_STANDARD;
 
@@ -1155,6 +1166,7 @@ function renderPricingEditor() {
       <td>${input('output')}</td>
       <td>${input('cache_read')}</td>
       <td>${input('cache_write')}</td>
+      <td>${p.cache_write_1h === undefined ? '<span class="muted">n/a</span>' : input('cache_write_1h')}</td>
       <td class="pricing-source">${overridden ? 'Custom' : 'Default'}</td>
     </tr>`;
   }).join('');
@@ -1218,11 +1230,11 @@ function getPricing(model) {
   return null;
 }
 
-function calcCost(model, inp, out, cacheRead, cacheCreation) {
-  return calcCostBreakdown(model, inp, out, cacheRead, cacheCreation).total;
+function calcCost(model, inp, out, cacheRead, cacheCreation, cacheCreation1h = 0) {
+  return calcCostBreakdown(model, inp, out, cacheRead, cacheCreation, cacheCreation1h).total;
 }
 
-function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation) {
+function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation, cacheCreation1h = 0) {
   const zero = { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0 };
   if (!isBillable(model)) return zero;
   const p = getPricing(model);
@@ -1230,7 +1242,11 @@ function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation) {
   const input = inp * p.input / 1e6;
   const output = out * p.output / 1e6;
   const cache_read = cacheRead * p.cache_read / 1e6;
-  const cache_creation = cacheCreation * p.cache_write / 1e6;
+  // 1h-TTL cache writes bill at 2x input, not the 5m 1.25x. Defaulting the 1h
+  // portion to 0 prices everything at the 5m rate (mirrors Python calc_cost).
+  const cc1h = Math.min(cacheCreation1h || 0, cacheCreation || 0);
+  const cache_creation = ((cacheCreation - cc1h) * p.cache_write
+    + cc1h * (p.cache_write_1h ?? p.cache_write)) / 1e6;
   const cache_savings = cacheRead * Math.max(p.input - p.cache_read, 0) / 1e6;
   return { input, output, cache_read, cache_creation, total: input + output + cache_read + cache_creation, cache_savings };
 }
@@ -1244,7 +1260,7 @@ function sessionCostBreakdown(s) {
   const bm = s && s.by_model;
   if (Array.isArray(bm) && bm.length) {
     return bm.reduce((acc, m) => {
-      const c = calcCostBreakdown(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+      const c = calcCostBreakdown(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
       acc.input += c.input;
       acc.output += c.output;
       acc.cache_read += c.cache_read;
@@ -1254,7 +1270,7 @@ function sessionCostBreakdown(s) {
       return acc;
     }, { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0 });
   }
-  return calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+  return calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
 }
 
 // Total $ cost of a session, priced per-model (see sessionCostBreakdown).
@@ -1755,7 +1771,7 @@ function applyFilter() {
     d.output         += r.output;
     d.cache_read     += r.cache_read;
     d.cache_creation += r.cache_creation;
-    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
   }
   const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
 
@@ -1823,7 +1839,7 @@ function applyFilter() {
     output:         byModel.reduce((s, m) => s + m.output, 0),
     cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
-    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
+    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h), 0),
     subagent_tokens: (rawData.subagent_by_type || [])
       .filter(r => selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end))
       .reduce((s, r) => s + r.input + r.output + r.cache_read + r.cache_creation, 0),
@@ -1843,7 +1859,7 @@ function applyFilter() {
     t.cache_read     += r.cache_read;
     t.cache_creation += r.cache_creation;
     t.turns          += r.turns;
-    t.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    t.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
   }
   const byTool = Object.values(toolMap).sort((a, b) => b.cost - a.cost);
   const hotSessions = sessionSignals(filteredSessions);
@@ -2190,7 +2206,7 @@ function renderTopDispatches(rows) {
   const shown = rows.slice(0, shownCount(dispatchesLimit, rows.length));
   body.innerHTML = shown.map(d => {
     const tokensTotal = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
+    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
     const costCell = isBillable(d.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -2413,7 +2429,7 @@ function renderSessionDetail(d) {
     ['Cache Savings', fmtCost(c.cache_savings)],
   ].map(([label, value]) => `<div class="detail-stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join('');
   document.getElementById('session-detail-body').innerHTML = d.turns.map((t, i) => {
-    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
     return `<tr>
       <td class="muted">${esc(t.timestamp)}</td>
       <td>${toolCellHTML(t, i)}</td>
@@ -2446,7 +2462,7 @@ function renderSessionToolBreakdown(turns) {
     row.output += t.output || 0;
     row.cache_read += t.cache_read || 0;
     row.cache_creation += t.cache_creation || 0;
-    row.cost += calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+    row.cost += calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
   }
   const rows = Object.values(byTool).sort((a, b) => b.cost - a.cost);
   const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
@@ -2480,7 +2496,7 @@ function renderSessionTimeline(turns) {
         {
           label: 'Cost',
           type: 'line',
-          data: turns.map(t => calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation)),
+          data: turns.map(t => calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h)),
           borderColor: '#4ade80',
           backgroundColor: 'rgba(74,222,128,0.18)',
           pointRadius: 3,
@@ -2559,8 +2575,8 @@ function sortModels(byModel) {
   return [...byModel].sort((a, b) => {
     let av, bv;
     if (modelSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation, a.cache_creation_1h);
+      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation, b.cache_creation_1h);
     } else {
       av = a[modelSortCol] ?? 0;
       bv = b[modelSortCol] ?? 0;
@@ -2575,7 +2591,7 @@ function renderModelCostTable(byModel) {
   const sorted = sortModels(byModel);
   const shown = sorted.slice(0, shownCount(modelLimit, sorted.length));
   document.getElementById('model-cost-body').innerHTML = shown.map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
     const costCell = isBillable(m.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -2718,7 +2734,7 @@ function downloadCSV(reportType, header, rows) {
 function exportModelCSV() {
   const header = ['Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = sortModels(lastByModel).map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
     return [m.model, m.turns, m.input, m.output, m.cache_read, m.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('cost_by_model', header, rows);
@@ -2737,7 +2753,7 @@ function exportSessionTurnsCSV() {
   if (!selectedSessionDetail) return;
   const header = ['Time', 'Tool', 'Model', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Cache 5m', 'Cache 1h', 'Duration (ms)', 'Stop Reason', 'Service Tier', 'Inference Geo', 'Sidechain', 'Compact Summary', 'Est. Cost'];
   const rows = selectedSessionDetail.turns.map(t => {
-    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation);
+    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
     return [t.timestamp, t.tool, t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_5m || 0, t.cache_creation_1h || 0, t.duration_ms || 0, t.stop_reason || '', t.service_tier || '', t.inference_geo || '', t.is_sidechain ? 1 : 0, t.is_compact_summary ? 1 : 0, cost.toFixed(4)];
   });
   downloadCSV('session_' + selectedSessionDetail.session.display_id + '_turns', header, rows);
@@ -2763,7 +2779,7 @@ function exportDispatchesCSV() {
   const header = ['Type', 'Agent ID', 'Description', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
   const rows = lastFilteredDispatches.map(d => {
     const total = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
+    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
     return [d.agent_type, d.agent_id, d.description || '', d.start, d.model, d.turns,
             d.tool_uses != null ? d.tool_uses : '', d.duration_ms != null ? d.duration_ms : '',
             d.input, d.output, d.cache_read, d.cache_creation, total, cost.toFixed(4), d.status || ''];

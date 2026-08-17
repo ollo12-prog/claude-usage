@@ -589,13 +589,16 @@ class TestPricingParity(unittest.TestCase):
 
         for name, py_rates in (("SONNET_5_INTRO", cli.SONNET_5_INTRO),
                                ("SONNET_5_STANDARD", cli.SONNET_5_STANDARD)):
-            m = re.search(
-                name + r" *= \{ input: ([\d.]+), output: ([\d.]+), "
-                       r"cache_write: ([\d.]+), cache_read: ([\d.]+) \}",
-                HTML_TEMPLATE)
+            m = re.search(name + r" *= \{([^}]*)\}", HTML_TEMPLATE)
             self.assertIsNotNone(m, f"{name} missing from dashboard JS")
-            for i, field in enumerate(("input", "output", "cache_write", "cache_read")):
-                self.assertAlmostEqual(py_rates[field], float(m.group(i + 1)),
+            # Parse the JS object body by field name rather than by position, so
+            # adding a rate (e.g. cache_write_1h) can't silently skip the check.
+            js_rates = {k: float(v) for k, v in
+                        re.findall(r"(\w+): *([\d.]+)", m.group(1))}
+            self.assertEqual(set(js_rates), set(py_rates),
+                             f"{name} has different rate KEYS in cli.py vs dashboard.py")
+            for field, py_value in py_rates.items():
+                self.assertAlmostEqual(py_value, js_rates[field],
                                        msg=f"{name} {field} differs between cli.py and dashboard.py")
 
 
@@ -666,7 +669,8 @@ class TestMixedModelSessionCost(unittest.TestCase):
     def test_js_prices_sessions_per_model(self):
         """The cost math runs in JS; keep the session sites off the single-label path."""
         # assertTrue, not assertIn: assertIn dumps the whole 130KB template on failure.
-        fallback = "  return calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation);"
+        fallback = ("  return calcCostBreakdown(s.model, s.input, s.output, "
+                    "s.cache_read, s.cache_creation, s.cache_creation_1h);")
         self.assertTrue("function sessionCostBreakdown(s)" in HTML_TEMPLATE,
                         "sessionCostBreakdown missing from dashboard JS")
         self.assertFalse("calcCost(s.model," in HTML_TEMPLATE,
