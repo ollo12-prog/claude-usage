@@ -7,10 +7,14 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
-from dashboard import get_dashboard_data, get_session_detail, DashboardHandler, HTML_TEMPLATE
+from dashboard import (
+    get_dashboard_data, get_session_detail, local_date,
+    DashboardHandler, HTML_TEMPLATE,
+)
 
 try:
     from http.server import HTTPServer
@@ -129,7 +133,11 @@ class TestGetDashboardData(unittest.TestCase):
         rows = data["hourly_by_model"]
         self.assertTrue(all("day" in r and "model" in r for r in rows))
         self.assertTrue(all(r["model"] == "claude-sonnet-4-6" for r in rows))
-        self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
+        # Days are bucketed in local time, so the expected values are derived the
+        # same way rather than hardcoded — a literal would assert the test
+        # machine's timezone, not the code.
+        expected = {local_date(t) for t in ("2026-04-08T09:30:00Z", "2026-04-08T14:15:00Z")}
+        self.assertTrue(all(r["day"] in expected for r in rows))
 
     def test_tool_by_model_populated(self):
         data = get_dashboard_data(db_path=self.db_path)
@@ -698,6 +706,96 @@ class TestByModelCarriesThe1hSplit(unittest.TestCase):
         self.assertIn("m.cache_creation_1h +=", block,
                       "modelMap never accumulates cache_creation_1h — every byModel "
                       "cost falls back to the 5m cache-write rate")
+
+
+class TestLocalDayBucketing(unittest.TestCase):
+    """Every range-filtered aggregate must bucket days in LOCAL time.
+
+    The frontend derives its range bounds from local calendar components
+    (`localISODate`, PR #151's "This Month" fix), and the CLI compares against
+    `date.today()`. A UTC `substr(timestamp, 1, 10)` bucket compared against those
+    bounds is off by up to a day at each edge — measured on a real UTC-4 database:
+    22,722 turns / 65.86M input tokens under UTC bucketing against 22,055 / 64.14M
+    under local, an $85 swing on a 7-day window.
+
+    Falsification note: the discriminating assertions are skipped when the test
+    machine runs at UTC, where the two bucketings are identical by definition and
+    nothing here can tell them apart. Verified red by monkeypatching
+    `dashboard.LOCAL_DAY` back to `substr(timestamp, 1, 10)`.
+    """
+
+    # NOON never crosses a local midnight for any real offset; SHIFTED always does
+    # unless the machine is at UTC — picked by the sign of the local offset, since
+    # no single fixed hour shifts in both eastern and western zones. Both fall on
+    # the same UTC calendar day, so UTC bucketing collapses them into one bucket
+    # and local bucketing splits them into two — that is the discriminator.
+    NOON_UTC = "2026-04-08T12:00:00Z"
+    SHIFTED_UTC = ("2026-04-08T23:30:00Z"
+                   if datetime.now().astimezone().utcoffset().total_seconds() > 0
+                   else "2026-04-08T00:30:00Z")
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-tz", "project_name": "user/proj",
+            "first_timestamp": self.NOON_UTC, "last_timestamp": self.SHIFTED_UTC,
+            "git_branch": "main", "model": "claude-sonnet-4-6",
+            "total_input_tokens": 200, "total_output_tokens": 100,
+            "total_cache_read": 0, "total_cache_creation": 0, "turn_count": 2,
+        }])
+        insert_turns(conn, [{
+            "session_id": "sess-tz", "timestamp": ts,
+            "model": "claude-sonnet-4-6", "input_tokens": 100, "output_tokens": 50,
+            "cache_read_tokens": 0, "cache_creation_tokens": 0,
+            "tool_name": "Read", "cwd": "/tmp",
+        } for ts in (self.NOON_UTC, self.SHIFTED_UTC)])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def _discriminates(self):
+        """True when this machine's timezone actually moves SHIFTED_UTC onto another
+        calendar day — i.e. when the assertions below can tell the bucketings apart."""
+        return local_date(self.SHIFTED_UTC) != self.SHIFTED_UTC[:10]
+
+    def test_daily_hourly_and_tool_buckets_are_local_days(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        expected = {local_date(self.NOON_UTC), local_date(self.SHIFTED_UTC)}
+        for key in ("daily_by_model", "hourly_by_model", "tool_by_model"):
+            days = {r["day"] for r in data[key]}
+            self.assertEqual(days, expected, f"{key} is not bucketed by local day")
+
+    def test_hourly_keeps_utc_hours(self):
+        """`day` goes local but `hour` stays UTC — the client shifts hours itself
+        (utcHourToDisplay), so shifting them here too would double-shift."""
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual({r["hour"] for r in data["hourly_by_model"]},
+                         {12, int(self.SHIFTED_UTC[11:13])})
+
+    def test_session_last_date_is_a_local_day(self):
+        """The sessions list is range-filtered on `last_date`, so a UTC slice there
+        classifies sessions into a different day than the token buckets above."""
+        data = get_dashboard_data(db_path=self.db_path)
+        row = next(s for s in data["sessions_all"] if s["full_session_id"] == "sess-tz")
+        self.assertEqual(row["last_date"], local_date(self.SHIFTED_UTC))
+        if not self._discriminates():
+            self.skipTest("machine is at UTC — local and UTC days coincide")
+        self.assertNotEqual(row["last_date"], self.SHIFTED_UTC[:10])
+
+    def test_utc_bucketing_would_disagree(self):
+        """Guards the guard: both fixtures share one UTC day, so a UTC bucket would
+        yield a single day. Two distinct days proves the assertions above are not
+        passing vacuously."""
+        if not self._discriminates():
+            self.skipTest("machine is at UTC — local and UTC days coincide")
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(len({r["day"] for r in data["daily_by_model"]}), 2)
 
 
 if __name__ == "__main__":

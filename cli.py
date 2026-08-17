@@ -18,6 +18,12 @@ from scanner import VERSION
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
+# Timestamps are stored ISO-8601 UTC; these commands compare day buckets against
+# Python's local `date.today()`, so bucketing must use SQLite's DST-aware
+# 'localtime' modifier to match (a bare `substr` would be UTC and off by up to a
+# day near midnight). Falls back to the UTC substr for any malformed timestamp.
+LOCAL_DAY = "COALESCE(date(timestamp, 'localtime'), substr(timestamp, 1, 10))"
+
 # Sonnet 5 launched on an introductory rate that expires; after that it bills at
 # the standard Sonnet rate. Resolved once at import against today's date.
 # ponytail: one dated model, so one dated constant — if a second model ever needs
@@ -137,7 +143,7 @@ def cmd_today():
     conn = require_db()
     today = date.today().isoformat()
 
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT
             COALESCE(model, 'unknown') as model,
             SUM(input_tokens)          as inp,
@@ -147,23 +153,23 @@ def cmd_today():
             SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
-        WHERE substr(timestamp, 1, 10) = ?
+        WHERE {LOCAL_DAY} = ?
         GROUP BY model
         ORDER BY inp + out DESC
     """, (today,)).fetchall()
 
-    sessions = conn.execute("""
+    sessions = conn.execute(f"""
         SELECT COUNT(DISTINCT session_id) as cnt
         FROM turns
-        WHERE substr(timestamp, 1, 10) = ?
+        WHERE {LOCAL_DAY} = ?
     """, (today,)).fetchone()
 
-    subagent = conn.execute("""
+    subagent = conn.execute(f"""
         SELECT
             COUNT(*) as turns,
             SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as tokens
         FROM turns
-        WHERE substr(timestamp, 1, 10) = ?
+        WHERE {LOCAL_DAY} = ?
           AND COALESCE(is_subagent, 0) = 1
     """, (today,)).fetchone()
 
@@ -210,9 +216,9 @@ def cmd_week():
     start = start_d.isoformat()
     end = today_d.isoformat()
 
-    by_day_model = conn.execute("""
+    by_day_model = conn.execute(f"""
         SELECT
-            substr(timestamp, 1, 10)   as day,
+            {LOCAL_DAY}                as day,
             COALESCE(model, 'unknown') as model,
             SUM(input_tokens)          as inp,
             SUM(output_tokens)         as out,
@@ -221,11 +227,11 @@ def cmd_week():
             SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
-        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        WHERE {LOCAL_DAY} BETWEEN ? AND ?
         GROUP BY day, model
     """, (start, end)).fetchall()
 
-    by_model = conn.execute("""
+    by_model = conn.execute(f"""
         SELECT
             COALESCE(model, 'unknown') as model,
             SUM(input_tokens)          as inp,
@@ -235,15 +241,15 @@ def cmd_week():
             SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
-        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        WHERE {LOCAL_DAY} BETWEEN ? AND ?
         GROUP BY model
         ORDER BY inp + out DESC
     """, (start, end)).fetchall()
 
-    sessions = conn.execute("""
+    sessions = conn.execute(f"""
         SELECT COUNT(DISTINCT session_id) as cnt
         FROM turns
-        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        WHERE {LOCAL_DAY} BETWEEN ? AND ?
     """, (start, end)).fetchone()
 
     print()
@@ -364,13 +370,13 @@ def cmd_stats():
     """).fetchone()
 
     # Daily average (last 30 days)
-    daily_avg = conn.execute("""
+    daily_avg = conn.execute(f"""
         SELECT
             AVG(daily_inp) as avg_inp,
             AVG(daily_out) as avg_out
         FROM (
             SELECT
-                substr(timestamp, 1, 10) as day,
+                {LOCAL_DAY} as day,
                 SUM(input_tokens) as daily_inp,
                 SUM(output_tokens) as daily_out
             FROM turns

@@ -40,6 +40,22 @@
 
 ### Dashboard
 
+- **Days are bucketed in local time, matching the range bounds.** Every
+  range-filtered aggregate (daily, hourly, tools, subagents, `today`/`week`/`stats`)
+  bucketed days with a UTC `substr(timestamp, 1, 10)`, while the frontend derives its
+  range bounds from local calendar components (#151's "This Month" fix) and the CLI
+  compares against `date.today()`. Turns near local midnight therefore fell on the
+  wrong side of a range edge: on a real UTC-4 database a 7-day window reported
+  22,722 turns / 65.86M input tokens instead of 22,055 / 64.14M — **$85 too high**.
+  Bucketing now uses SQLite's DST-aware `date(timestamp, 'localtime')`, with the UTC
+  substr kept as a fallback for a malformed timestamp. `hour` deliberately stays UTC
+  — the client already TZ-shifts hours, so shifting them here would double-shift.
+  This is a localhost tool (server and browser share the machine); serving with
+  `--host` to a browser in another timezone reintroduces an edge-day skew.
+- The `last_date` / `start_date` fields the client range-filters sessions and
+  subagent dispatches on were UTC slices of the same timestamps, so a session and its
+  own turns could land on opposite sides of a range edge. Both are local now.
+
 - **Mixed-model sessions are no longer overcharged.** The `sessions` table stores a
   single primary-model label (opus > sonnet > haiku), and every session-derived cost
   priced that label against the session's *summed* tokens — so a session whose

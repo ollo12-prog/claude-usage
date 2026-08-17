@@ -14,6 +14,30 @@ from scanner import VERSION, init_db
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
+# Day bucket for every range-filtered aggregate. `timestamp` is stored ISO-8601
+# UTC, but the frontend derives its range bounds from local calendar components
+# (localISODate — PR #151's "This Month" TZ fix), so a UTC substr bucket compared
+# against local bounds is off by up to a day at both edges. SQLite's `localtime`
+# modifier converts per-timestamp, so it is DST-aware where a fixed offset would
+# not be; the substr fallback covers a malformed/unparseable timestamp.
+# This is a localhost tool — server and browser share the machine. Serving with
+# --host to a browser in another timezone reintroduces an edge-day skew.
+def local_day(col="timestamp"):
+    return f"COALESCE(date({col}, 'localtime'), substr({col}, 1, 10))"
+
+
+LOCAL_DAY = local_day()
+
+
+def local_date(iso_utc_ts):
+    """The LOCAL_DAY conversion for a timestamp already read out of the DB, so
+    day fields the client range-filters (`last_date`, `start_date`) agree with the
+    SQL-side buckets instead of being a UTC slice. Falls back to the raw slice."""
+    try:
+        return datetime.fromisoformat(iso_utc_ts.replace("Z", "+00:00")).astimezone().date().isoformat()
+    except Exception:
+        return (iso_utc_ts or "")[:10]
+
 
 def _session_model_breakdowns(conn):
     """Return ``{session_id: [{model, input, output, cache_read, cache_creation}]}``
@@ -81,9 +105,9 @@ def get_dashboard_data(db_path=DB_PATH):
     all_models = [r["model"] for r in model_rows]
 
     # ── Daily per-model, ALL history (client filters by range) ────────────────
-    daily_rows = conn.execute("""
+    daily_rows = conn.execute(f"""
         SELECT
-            substr(timestamp, 1, 10)   as day,
+            {LOCAL_DAY}                as day,
             COALESCE(NULLIF(model, ''), 'unknown') as model,
             SUM(input_tokens)          as input,
             SUM(output_tokens)         as output,
@@ -109,9 +133,12 @@ def get_dashboard_data(db_path=DB_PATH):
 
     # ── Hourly per-day per-model (client filters by range + TZ-shifts) ────────
     # Timestamps are ISO8601 UTC (e.g. "2026-04-08T09:30:00Z"); chars 12-13 = hour.
-    hourly_rows = conn.execute("""
+    # `day` is bucketed local so it lines up with the range filter; `hour` stays
+    # UTC on purpose — the client TZ-shifts hours itself (utcHourToDisplay), so
+    # local day + client-shifted UTC hour stay consistent and do not double-shift.
+    hourly_rows = conn.execute(f"""
         SELECT
-            substr(timestamp, 1, 10)                  as day,
+            {LOCAL_DAY}                               as day,
             CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
             COALESCE(NULLIF(model, ''), 'unknown')    as model,
             SUM(output_tokens)                        as output,
@@ -131,9 +158,9 @@ def get_dashboard_data(db_path=DB_PATH):
     } for r in hourly_rows]
 
     # ── Tool usage per-day per-model (client filters by range) ────────────────
-    tool_rows = conn.execute("""
+    tool_rows = conn.execute(f"""
         SELECT
-            substr(timestamp, 1, 10)        as day,
+            {LOCAL_DAY}                     as day,
             COALESCE(model, 'unknown')      as model,
             COALESCE(tool_name, '<none>')   as tool,
             SUM(input_tokens)               as input,
@@ -195,7 +222,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "branch":        r["git_branch"] or "",
             "topic":         r["topic"] or "",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     (r["last_timestamp"] or "")[:10],
+            "last_date":     local_date(r["last_timestamp"]),
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "tools":         [x for x in (r["tools"] or "").split(",") if x],
@@ -219,7 +246,7 @@ def get_dashboard_data(db_path=DB_PATH):
 
     subagent_daily_rows = conn.execute(f"""
         SELECT
-            substr(t.timestamp, 1, 10)               as day,
+            {local_day("t.timestamp")}               as day,
             {AGENT_TYPE_EXPR}                        as agent_type,
             COALESCE(NULLIF(t.model, ''), 'unknown') as model,
             SUM(t.input_tokens)                      as input,
@@ -281,7 +308,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "description":    r["description"],
         "model":          r["model"],
         "start":          (r["start_ts"] or "")[:16].replace("T", " "),
-        "start_date":     (r["start_ts"] or "")[:10],
+        "start_date":     local_date(r["start_ts"]),
         "input":          r["input"] or 0,
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,

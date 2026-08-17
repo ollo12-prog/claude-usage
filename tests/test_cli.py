@@ -3,6 +3,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from datetime import timedelta
 from unittest import mock
 import cli
@@ -249,6 +250,24 @@ class TestDashboardNoBrowser(unittest.TestCase):
             cli.cmd_dashboard(host="127.0.0.1", port=9999, no_browser=True)
             mock_open.assert_not_called()
             mock_serve.assert_called_once()
+
+
+class TestCliDayBucketing(unittest.TestCase):
+    """`today`/`week`/`stats` compare day buckets against Python's local
+    `date.today()`, so the buckets must be local too. Source-level guard: these
+    commands print rather than return, and standing up a DB harness per command
+    would cost more than it catches — the bucketing expression itself is exercised
+    through the dashboard (tests/test_dashboard.py::TestLocalDayBucketing).
+    """
+
+    def test_no_bare_utc_day_bucket_remains(self):
+        src = Path(cli.__file__).read_text(encoding="utf-8")
+        stray = [l for l in src.splitlines()
+                 if "substr(timestamp, 1, 10)" in l and not l.startswith("LOCAL_DAY =")]
+        self.assertEqual(stray, [], "UTC day bucket outside LOCAL_DAY: " + repr(stray))
+
+    def test_local_day_uses_the_dst_aware_modifier(self):
+        self.assertIn("date(timestamp, 'localtime')", cli.LOCAL_DAY)
 
 
 if __name__ == "__main__":
