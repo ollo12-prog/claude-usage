@@ -81,6 +81,16 @@ def _make_advisor_record(message_id="msg_adv_1", session_id="sess-1",
     return json.dumps(record)
 
 
+def _with_tool_call(record_json, name="Read"):
+    """Same record, plus a tool_use block — the field the old duplicate dropped."""
+    record = json.loads(record_json)
+    record["message"]["content"] = [
+        {"type": "tool_use", "id": "toolu_1", "name": name,
+         "input": {"file_path": "/tmp/x"}},
+    ]
+    return json.dumps(record)
+
+
 class _FixtureMixin(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -293,6 +303,88 @@ class TestUpgradeBackfill(unittest.TestCase):
         conn.close()
         self._scan()
         self.assertEqual(self._advisor_rows(), first)
+
+
+class TestIncrementalScanKeepsAdvisorTurns(unittest.TestCase):
+    """Advisor turns must survive the *incremental* path, not just a full parse.
+
+    A live session is rescanned every time the dashboard runs, so most advisor
+    calls arrive as lines appended to an already-processed file. That path used
+    to be a second, hand-maintained copy of the parse loop with no advisor block,
+    so every advisor call after a file's first scan was silently billed at $0 —
+    and the one-time re-parse could not save it, because the next append put the
+    file straight back on the incremental path.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects = os.path.join(self.tmpdir, "projects", "proj")
+        os.makedirs(self.projects)
+        self.jsonl = os.path.join(self.projects, "sess.jsonl")
+        self.db = os.path.join(self.tmpdir, "usage.db")
+        # First scan sees a session with no advisor call yet.
+        self._append(json.dumps({
+            "type": "assistant", "sessionId": "sess-1",
+            "timestamp": "2026-08-17T09:00:00Z", "cwd": "/home/user/project",
+            "message": {"id": "msg_plain", "model": PARENT_MODEL, "content": [],
+                        "usage": {"input_tokens": 10, "output_tokens": 20}},
+        }))
+
+    def _append(self, line):
+        with open(self.jsonl, "a") as f:
+            f.write(line + "\n")
+        # Bump the mtime past the recorded one: a same-tick write would be seen as
+        # unchanged and skipped, which would fail the test for the wrong reason.
+        stamp = os.path.getmtime(self.jsonl) + 10
+        os.utime(self.jsonl, (stamp, stamp))
+
+    def _scan(self):
+        scanner.scan(projects_dir=os.path.join(self.tmpdir, "projects"),
+                     db_path=self.db, verbose=False)
+
+    def _advisor_rows(self):
+        conn = sqlite3.connect(self.db)
+        rows = conn.execute("SELECT message_id, model, input_tokens, output_tokens "
+                            "FROM turns WHERE message_id LIKE 'advisor:%'").fetchall()
+        conn.close()
+        return rows
+
+    def test_advisor_turn_appended_after_first_scan_is_recorded(self):
+        self._scan()
+        self.assertEqual(self._advisor_rows(), [])
+        self._append(_make_advisor_record(message_id="msg_adv_late"))
+        self._scan()
+        rows = self._advisor_rows()
+        self.assertEqual(len(rows), 1, "incremental scan dropped the advisor turn")
+        self.assertEqual(rows[0][0], "advisor:msg_adv_late:1")
+        self.assertEqual(rows[0][1], ADVISOR_MODEL)
+        self.assertEqual((rows[0][2], rows[0][3]), (300_000, 20_000))
+
+    def test_incremental_turn_carries_the_same_fields_as_a_full_parse(self):
+        """Parity guard: both paths must produce the same turn shape.
+
+        Passes against the old duplicate too — on the fields it happened to have
+        in sync. It is here to catch the *next* divergence (tool_calls already
+        went missing once this way), not to reproduce this bug.
+        """
+        record = _with_tool_call(_make_advisor_record(message_id="msg_adv_late"))
+        self._scan()
+        self._append(record)
+        self._scan()
+        conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM turns "
+                           "WHERE message_id = 'msg_adv_late'").fetchone()
+        conn.close()
+        self.assertIsNotNone(row, "incremental scan dropped the parent turn")
+        reference = os.path.join(self.tmpdir, "full.jsonl")
+        with open(reference, "w") as f:
+            f.write(record + "\n")
+        expected = {t["message_id"]: t
+                    for t in parse_jsonl_file(reference)[1]}["msg_adv_late"]
+        for field, want in expected.items():
+            if field in row.keys():
+                self.assertEqual(row[field], want, "incremental %s differs" % field)
 
 
 if __name__ == "__main__":
