@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Cost accuracy
+
+- **Fable 5.1 / Mythos 5.1 cache reads were billed at 4x.** These are the only
+  models whose cache *hits* are not 0.1x the base input rate — they bill
+  **$0.25/MTok** against Fable 5's $1.00 (input, output and both cache-write
+  rates are unchanged at $10 / $50 / $12.50 / $20). `claude-fable-5-1` resolved
+  through the prefix scan onto `claude-fable-5` and was priced as 5.0, which
+  overstates exactly the token class that dominates an agentic session. Both 5.1
+  keys are listed above the 5.0 rows in `cli.PRICING` and the dashboard's
+  `DEFAULT_PRICING` because that scan is first-wins over insertion order, and the
+  keyword fallbacks check `fable-5-1` / `mythos-5-1` before `fable` / `mythos`.
+  Verified against platform.claude.com/docs/en/about-claude/pricing on 2026-09-02.
+
 ### Attribution
 
 - **Background subagent dispatches now carry their real name.** The scanner

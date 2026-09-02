@@ -39,6 +39,13 @@ def sonnet_5_pricing(day=None):
 PRICING = {
     # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
+    # 5.1 prices cache HITS at 0.025x input ($0.25), not the 0.1x ($1.00) every
+    # other model uses (platform.claude.com/docs/en/about-claude/pricing,
+    # 2026-09-02). Listed above the 5.0 rows: the prefix scan in get_pricing() is
+    # first-wins over insertion order, so a dated "claude-fable-5-1-..." id must
+    # meet this key before "claude-fable-5" can swallow it.
+    "claude-fable-5-1":  {"input": 10.00, "output": 50.00, "cache_read": 0.25, "cache_write": 12.50, "cache_write_1h": 20.00},
+    "claude-mythos-5-1": {"input": 10.00, "output": 50.00, "cache_read": 0.25, "cache_write": 12.50, "cache_write_1h": 20.00},
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
     "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
     # Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
@@ -67,6 +74,8 @@ def get_pricing(model):
             return PRICING[key]
     # Substring fallback: match model family by keyword
     m = model.lower()
+    if "fable-5-1" in m or "mythos-5-1" in m:
+        return PRICING["claude-fable-5-1"]
     if "fable" in m or "mythos" in m:
         return PRICING["claude-fable-5"]
     if "opus" in m:

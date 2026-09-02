@@ -1014,7 +1014,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of August 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of September 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/ollo12-prog/claude-usage" target="_blank">https://github.com/ollo12-prog/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -1132,6 +1132,10 @@ const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
 const DEFAULT_PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
+  // 5.1 prices cache hits at 0.025x input, not 0.1x — and sits above the 5.0
+  // rows because getPricing()'s prefix scan is first-wins (see cli.PRICING).
+  'claude-fable-5-1':  { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 0.25, cache_write_1h: 20.00 },
+  'claude-mythos-5-1': { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 0.25, cache_write_1h: 20.00 },
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
   // Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
@@ -1250,6 +1254,7 @@ function getPricing(model) {
     if (model.startsWith(key)) return PRICING[key];
   }
   const m = model.toLowerCase();
+  if (m.includes('fable-5-1') || m.includes('mythos-5-1')) return PRICING['claude-fable-5-1'];
   if (m.includes('fable') || m.includes('mythos')) return PRICING['claude-fable-5'];
   if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];

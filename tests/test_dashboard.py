@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import re
 import unittest
 import urllib.request
 from datetime import datetime
@@ -566,6 +567,30 @@ class TestPricingParity(unittest.TestCase):
         expected = dict(cli.PRICING)
         expected["claude-sonnet-5"] = cli.SONNET_5_STANDARD
         return expected
+
+    def test_fable_51_cache_read_is_a_quarter_of_fable_5(self):
+        """The 0.025x cache-hit rate, in both tables.
+
+        The parity check above compares only input/output, so a cache_read that
+        drifted between cli.py and the dashboard JS — or a 5.1 id silently priced
+        as 5.0 — would pass it. That is a 4x overcharge on the token class that
+        dominates an agentic session.
+        """
+        import cli
+        self.assertEqual(cli.get_pricing("claude-fable-5-1")["cache_read"], 0.25)
+        self.assertEqual(cli.get_pricing("claude-fable-5")["cache_read"], 1.00)
+        # A dated variant must not fall through to Fable 5's prefix.
+        self.assertEqual(
+            cli.get_pricing("claude-fable-5-1-20260901")["cache_read"], 0.25)
+        self.assertEqual(cli.get_pricing("claude-mythos-5-1")["cache_read"], 0.25)
+
+        js = dict(re.findall(
+            r"'(claude-fable-5-1|claude-fable-5)':\s*\{[^}]*cache_read:\s*([\d.]+)",
+            HTML_TEMPLATE))
+        self.assertEqual(float(js["claude-fable-5-1"]), 0.25)
+        self.assertEqual(float(js["claude-fable-5"]), 1.00)
+        self.assertLess(HTML_TEMPLATE.index("'claude-fable-5-1'"),
+                        HTML_TEMPLATE.index("'claude-fable-5'"))
 
     def test_all_cli_models_in_dashboard(self):
         js_prices = self._extract_js_pricing()
