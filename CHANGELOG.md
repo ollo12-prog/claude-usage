@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Attribution
+
+- **Background subagent dispatches now carry their real name.** The scanner
+  learned an agent's name only from the parent's closing `toolUseResult`, which
+  carries `agentType` only when the dispatch ran synchronously and completed; a
+  background (`isAsync`) dispatch logs `status: "async_launched"` with no
+  `agentType`, so this fork fell back to the `async` placeholder for all of
+  them. The subagent's own transcript records carry `attributionAgent`
+  alongside `agentId`, so the name is now read from there too — independent of
+  how the dispatch was launched or whether it finished. A parent-supplied
+  `agentType` still wins; attribution only fills a row that has no name or only
+  the placeholder, and a late-arriving `async` launch record can no longer
+  overwrite a name already learned. A one-time backfill
+  (`agent_type_backfill_done` in `schema_meta`, mirroring the topic backfill)
+  names agents in existing databases without a full rescan — already-processed
+  transcripts are re-read for `attributionAgent` records only, leaving `turns`
+  untouched so token totals cannot drift. Ported from upstream PR #176
+  (thanks @retog).
+
 ### Cost accuracy
 
 - **Advisor calls were billed at $0.** An `advisor` tool call is a separate

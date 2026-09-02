@@ -277,6 +277,49 @@ def _backfill_topics(conn, jsonl_files):
     return len(titles)
 
 
+def _backfill_agent_types(conn, jsonl_files):
+    """One-time backfill of subagent names for a DB scanned before attribution.
+
+    Same shape as _backfill_topics: files already in processed_files are skipped
+    by an incremental scan, so their ``attributionAgent`` records are never seen
+    and those agents keep rendering as 'async' or 'unknown'. Re-read just those
+    records (turns are left untouched, so token totals cannot drift) and name any
+    agent that has no real name yet — including agents with no ``agents`` row at
+    all, the usual case for background dispatches. Runs once, gated by a flag in
+    schema_meta (see scan()). Returns the number of agents named.
+    """
+    named = {r["agent_id"] for r in conn.execute(
+        "SELECT agent_id FROM agents "
+        "WHERE COALESCE(agent_type, '') NOT IN ('', 'async')")}
+
+    found = {}  # agent_id -> agent_type
+    for filepath in jsonl_files:
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Cheap prefilter: skip JSON-parsing lines that cannot match.
+                    if "attributionAgent" not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    attribution = extract_agent_attribution(record)
+                    if attribution is None or attribution["agent_id"] in named:
+                        continue
+                    found.setdefault(attribution["agent_id"], attribution["agent_type"])
+        except Exception as e:
+            print(f"  Warning: error reading {filepath}: {e}")
+
+    if found:
+        upsert_agents(conn, [
+            {"source": "attribution", "agent_id": aid, "agent_type": atype}
+            for aid, atype in found.items()
+        ])
+        conn.commit()
+    return len(found)
+
+
 def project_name_from_cwd(cwd):
     """Derive a friendly project name from cwd path."""
     if not cwd:
@@ -356,30 +399,77 @@ def extract_agent_dispatch(record):
     }
 
 
+def extract_agent_attribution(record):
+    """Pull the subagent's name off one of its *own* transcript records.
+
+    ``extract_agent_dispatch`` reads the parent's closing ``toolUseResult``,
+    which carries ``agentType`` only when the dispatch ran synchronously and
+    completed. A background dispatch logs ``status: 'async_launched'`` with no
+    ``agentType``, which this fork labels with the ``async`` placeholder.
+    Every assistant record inside the subagent's own jsonl carries
+    ``attributionAgent`` (the real name: 'general-purpose', 'Explore', a plugin
+    agent like 'health:coach') alongside ``agentId``, so the name is
+    recoverable however the dispatch was launched. Ported from upstream
+    PR #176 (retog).
+    """
+    agent_type = record.get("attributionAgent")
+    if not agent_type:
+        return None
+    agent_id = record_agent_id(record)
+    if not agent_id:
+        return None
+    return {"source": "attribution", "agent_id": agent_id, "agent_type": agent_type}
+
+
 def upsert_agents(conn, agents):
-    """Insert or update agent dispatch metadata. Last write wins per agent_id."""
+    """Insert or update agent metadata, routed by each record's ``source``.
+
+    Dispatch records (the parent's ``toolUseResult``) overwrite every column —
+    last write wins per agent_id, as before — except that the ``async``
+    placeholder never clobbers a real name. Attribution records carry a name
+    only, and fill a row that has no name or only the placeholder.
+    """
     if not agents:
         return
-    conn.executemany("""
-        INSERT INTO agents
-            (agent_id, agent_type, description, dispatched_in_session, completed_at,
-             status, total_tokens, total_duration_ms, tool_use_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(agent_id) DO UPDATE SET
-            agent_type            = excluded.agent_type,
-            description           = excluded.description,
-            dispatched_in_session = excluded.dispatched_in_session,
-            completed_at          = excluded.completed_at,
-            status                = excluded.status,
-            total_tokens          = excluded.total_tokens,
-            total_duration_ms     = excluded.total_duration_ms,
-            tool_use_count        = excluded.tool_use_count
-    """, [
-        (a["agent_id"], a["agent_type"], a.get("description"),
-         a.get("dispatched_in_session"), a.get("completed_at"), a.get("status"),
-         a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
-        for a in agents
-    ])
+
+    dispatches = [a for a in agents if a.get("source") != "attribution"]
+    attributions = [a for a in agents if a.get("source") == "attribution"]
+
+    if dispatches:
+        conn.executemany("""
+            INSERT INTO agents
+                (agent_id, agent_type, description, dispatched_in_session, completed_at,
+                 status, total_tokens, total_duration_ms, tool_use_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                agent_type            = CASE WHEN excluded.agent_type = 'async'
+                                             THEN COALESCE(NULLIF(agents.agent_type, ''), 'async')
+                                             ELSE excluded.agent_type END,
+                description           = excluded.description,
+                dispatched_in_session = excluded.dispatched_in_session,
+                completed_at          = excluded.completed_at,
+                status                = excluded.status,
+                total_tokens          = excluded.total_tokens,
+                total_duration_ms     = excluded.total_duration_ms,
+                tool_use_count        = excluded.tool_use_count
+        """, [
+            (a["agent_id"], a["agent_type"], a.get("description"),
+             a.get("dispatched_in_session"), a.get("completed_at"), a.get("status"),
+             a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
+            for a in dispatches
+        ])
+
+    if attributions:
+        # Fills a row that has no name, or only the 'async' placeholder; a real
+        # dispatch-supplied name always wins.
+        conn.executemany("""
+            INSERT INTO agents (agent_id, agent_type)
+            VALUES (?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                agent_type = CASE WHEN COALESCE(agents.agent_type, '') IN ('', 'async')
+                                  THEN excluded.agent_type
+                                  ELSE agents.agent_type END
+        """, [(a["agent_id"], a["agent_type"]) for a in attributions])
 
 
 def parse_jsonl_file(filepath, start_line=0):
@@ -451,6 +541,10 @@ def parse_jsonl_file(filepath, start_line=0):
                     dispatch = extract_agent_dispatch(record)
                     if dispatch is not None:
                         agents[dispatch["agent_id"]] = dispatch
+
+                attribution = extract_agent_attribution(record)
+                if attribution is not None:
+                    agents.setdefault(attribution["agent_id"], attribution)
 
                 timestamp = record.get("timestamp", "")
                 cwd = record.get("cwd", "")
@@ -784,6 +878,16 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
         if verbose and filled:
             print(f"Backfilled topic for {filled} existing session(s).")
+
+    # Same for subagent names: DBs scanned before attributionAgent was read have
+    # agents named only 'async' (or missing entirely) that an incremental scan
+    # would never revisit. No-ops on a fresh DB, where nothing is skipped.
+    if any_dir_found and _meta_get(conn, "agent_type_backfill_done") != "1":
+        named = _backfill_agent_types(conn, jsonl_files)
+        _meta_set(conn, "agent_type_backfill_done", "1")
+        conn.commit()
+        if verbose and named:
+            print(f"Backfilled name for {named} existing subagent dispatch(es).")
 
     new_files = 0
     updated_files = 0

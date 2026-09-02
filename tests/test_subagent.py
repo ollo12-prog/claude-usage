@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scanner import get_db, init_db, parse_jsonl_file, scan
+from scanner import (
+    get_db, init_db, parse_jsonl_file, scan, extract_agent_attribution,
+)
 
 NL = chr(10)  # avoid backslash-escaped newline literals in source
 
@@ -52,6 +54,23 @@ def _dispatch(session_id="s1", agent_id="agent-1", agent_type="Explore",
             "totalTokens": total_tokens,
             "totalDurationMs": 4200,
             "totalToolUseCount": 3,
+        },
+    })
+
+
+def _async_dispatch(session_id="s1", agent_id="agent-1",
+                    timestamp="2026-04-08T10:01:00Z"):
+    """A background (isAsync) dispatch launch record: agentId but no agentType."""
+    return json.dumps({
+        "type": "user",
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "toolUseResult": {
+            "agentId": agent_id,
+            "isAsync": True,
+            "status": "async_launched",
+            "description": "Do the thing",
+            "resolvedModel": "claude-sonnet-5",
         },
     })
 
@@ -188,3 +207,143 @@ class TestSubagentScanIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAgentAttribution(unittest.TestCase):
+    """attributionAgent on the subagent's own records names it (upstream PR #176).
+
+    This fork already labels a background dispatch 'async'; attribution replaces
+    that placeholder with the real name, and a parent-supplied agentType still wins.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _project(self):
+        projects = Path(self.tmpdir) / "projects"
+        parent = projects / "user" / "proj"
+        (parent / "subagents").mkdir(parents=True)
+        return projects, parent
+
+    def _agent_type(self, db, agent_id):
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT agent_type FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def test_extract_reads_name_and_id(self):
+        rec = {"type": "assistant", "agentId": "agent-x",
+               "attributionAgent": "Explore"}
+        self.assertEqual(extract_agent_attribution(rec),
+                         {"source": "attribution", "agent_id": "agent-x",
+                          "agent_type": "Explore"})
+
+    def test_extract_requires_both_fields(self):
+        self.assertIsNone(extract_agent_attribution({"agentId": "agent-x"}))
+        self.assertIsNone(extract_agent_attribution({"attributionAgent": "Explore"}))
+
+    def test_parse_captures_attribution(self):
+        path = os.path.join(self.tmpdir, "agent-1.jsonl")
+        with open(path, "w") as f:
+            f.write(_assistant(extra={"agentId": "agent-1",
+                                      "attributionAgent": "herald"}) + NL)
+        _, _, agents, _ = parse_jsonl_file(path)
+        self.assertEqual(len(agents), 1)
+        self.assertEqual(agents[0]["agent_id"], "agent-1")
+        self.assertEqual(agents[0]["agent_type"], "herald")
+        self.assertEqual(agents[0]["source"], "attribution")
+
+    def test_dispatch_name_wins_over_attribution(self):
+        projects, parent = self._project()
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_dispatch(session_id="sess-1", agent_id="agent-1",
+                              agent_type="Explore") + NL)
+        with open(parent / "subagents" / "agent-1.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-1",
+                                      "attributionAgent": "something-else"}) + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-1"), "Explore")
+
+    def test_async_dispatch_is_named_from_attribution(self):
+        """The real-world case: background dispatch, previously stuck on 'async'."""
+        projects, parent = self._project()
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_async_dispatch(session_id="sess-1", agent_id="agent-9") + NL)
+        with open(parent / "subagents" / "agent-9.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               input_tokens=300,
+                               extra={"agentId": "agent-9",
+                                      "attributionAgent": "general-purpose"}) + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-9"), "general-purpose")
+
+    def test_async_placeholder_survives_without_attribution(self):
+        """No subagent transcript to learn from: the fork's label is unchanged."""
+        projects, parent = self._project()
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_async_dispatch(session_id="sess-1", agent_id="agent-8") + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-8"), "async")
+
+    def test_backfill_names_agents_in_already_scanned_db(self):
+        """Files already in processed_files are skipped; the backfill covers them."""
+        projects, parent = self._project()
+        with open(parent / "subagents" / "agent-7.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-7",
+                                      "attributionAgent": "archivist"}) + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+
+        # Simulate a DB produced before attribution existed: drop the name and
+        # the backfill marker, leaving processed_files intact.
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM agents")
+        conn.execute("DELETE FROM schema_meta WHERE key = 'agent_type_backfill_done'")
+        conn.commit()
+        conn.close()
+
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-7"), "archivist")
+
+    def test_backfill_replaces_the_async_placeholder(self):
+        projects, parent = self._project()
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_async_dispatch(session_id="sess-1", agent_id="agent-6") + NL)
+        with open(parent / "subagents" / "agent-6.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-6",
+                                      "attributionAgent": "Explore"}) + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE agents SET agent_type = 'async'")
+        conn.execute("DELETE FROM schema_meta WHERE key = 'agent_type_backfill_done'")
+        conn.commit()
+        conn.close()
+
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-6"), "Explore")
+
+    def test_a_later_async_dispatch_does_not_clobber_a_learned_name(self):
+        """The subagent's file is scanned first; the parent's launch record lands
+        on a rescan and must not overwrite the real name with 'async'."""
+        projects, parent = self._project()
+        with open(parent / "subagents" / "agent-5.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-5",
+                                      "attributionAgent": "Explore"}) + NL)
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-5"), "Explore")
+
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_async_dispatch(session_id="sess-1", agent_id="agent-5") + NL)
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        self.assertEqual(self._agent_type(db, "agent-5"), "Explore")
