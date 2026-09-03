@@ -30,6 +30,9 @@ def local_day(col="timestamp", tz="local"):
     return f"COALESCE(date({col}, 'localtime'), substr({col}, 1, 10))"
 
 
+# The local-mode expression, kept for tests/callers that reference it. Queries
+# inside get_dashboard_data shadow it with the display-tz one — wire new day
+# buckets to that local, not to this.
 LOCAL_DAY = local_day()
 
 
