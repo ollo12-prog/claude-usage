@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # ships only the three Python files, so the runtime version has to live here as
 # a constant. Keep it in lockstep with the top CHANGELOG heading — a parity test
 # guards both; see tests/test_version.py.
-VERSION = "1.5.6"
+VERSION = "1.6.0"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"

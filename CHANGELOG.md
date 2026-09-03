@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.6.0 — 2026-09-02
 
 ### Cost accuracy
 
@@ -12,26 +12,6 @@
   model. Verified against platform.claude.com/docs/en/about-claude/pricing on
   2026-09-02. A hand-edited Sonnet 5 row in the Pricing tab still overrides the
   default until you hit Reset.
-
-### Dashboard
-
-- **"Last 7 Days" covered 8 calendar days** (and 30d/90d likewise covered 31/91).
-  The range is open-ended — the filter is `day >= start` with no end — so a start
-  of `today - 7` includes an eighth day. It is now `today - 6`, inclusive of
-  today.
-- **UTC / local toggle.** Claude's own usage page reports UTC while this
-  dashboard always reported in the machine's local calendar, so the two
-  disagreed by a day at every range edge. Every `day` field is bucketed
-  server-side, so the toggle is a server round-trip (`/api/data?tz=utc` swaps
-  `date(ts, 'localtime')` for the plain UTC slice) and the client derives its
-  range bounds and renders timestamps in the same calendar — mixing the two puts
-  a session on the far side of a range edge from its own turns. The hourly
-  chart's Local/UTC buttons now drive all of it, so they move into the filter bar
-  next to Range; the mode rides in `?tz=` alongside `?range=`. Local stays the
-  default.
-
-### Cost accuracy
-
 - **Fable 5.1 / Mythos 5.1 cache reads were billed at 4x.** These are the only
   models whose cache *hits* are not 0.1x the base input rate — they bill
   **$0.25/MTok** against Fable 5's $1.00 (input, output and both cache-write
@@ -42,28 +22,6 @@
   `DEFAULT_PRICING` because that scan is first-wins over insertion order, and the
   keyword fallbacks check `fable-5-1` / `mythos-5-1` before `fable` / `mythos`.
   Verified against platform.claude.com/docs/en/about-claude/pricing on 2026-09-02.
-
-### Attribution
-
-- **Background subagent dispatches now carry their real name.** The scanner
-  learned an agent's name only from the parent's closing `toolUseResult`, which
-  carries `agentType` only when the dispatch ran synchronously and completed; a
-  background (`isAsync`) dispatch logs `status: "async_launched"` with no
-  `agentType`, so this fork fell back to the `async` placeholder for all of
-  them. The subagent's own transcript records carry `attributionAgent`
-  alongside `agentId`, so the name is now read from there too — independent of
-  how the dispatch was launched or whether it finished. A parent-supplied
-  `agentType` still wins; attribution only fills a row that has no name or only
-  the placeholder, and a late-arriving `async` launch record can no longer
-  overwrite a name already learned. A one-time backfill
-  (`agent_type_backfill_done` in `schema_meta`, mirroring the topic backfill)
-  names agents in existing databases without a full rescan — already-processed
-  transcripts are re-read for `attributionAgent` records only, leaving `turns`
-  untouched so token totals cannot drift. Ported from upstream PR #176
-  (thanks @retog).
-
-### Cost accuracy
-
 - **Advisor calls were billed at $0.** An `advisor` tool call is a separate
   inference on a different (usually stronger) model, carried inside the parent
   assistant message as a `usage.iterations[]` entry of type `advisor_message`,
@@ -93,13 +51,22 @@
   rates for models that have one and `n/a` for those that don't (the OpenAI-style
   entries have no 1h tier).
 
-### Packaging
-
-- Homebrew formula now points at this fork's own `v1.5.6` tarball; it was pinned to upstream's `v1.5.4`, so `brew install` served upstream code.
-- `pyproject.toml` Homepage/Issues point at this fork, with upstream kept as a separate `Upstream` link.
-
 ### Dashboard
 
+- **"Last 7 Days" covered 8 calendar days** (and 30d/90d likewise covered 31/91).
+  The range is open-ended — the filter is `day >= start` with no end — so a start
+  of `today - 7` includes an eighth day. It is now `today - 6`, inclusive of
+  today.
+- **UTC / local toggle.** Claude's own usage page reports UTC while this
+  dashboard always reported in the machine's local calendar, so the two
+  disagreed by a day at every range edge. Every `day` field is bucketed
+  server-side, so the toggle is a server round-trip (`/api/data?tz=utc` swaps
+  `date(ts, 'localtime')` for the plain UTC slice) and the client derives its
+  range bounds and renders timestamps in the same calendar — mixing the two puts
+  a session on the far side of a range edge from its own turns. The hourly
+  chart's Local/UTC buttons now drive all of it, so they move into the filter bar
+  next to Range; the mode rides in `?tz=` alongside `?range=`. Local stays the
+  default.
 - **Days are bucketed in local time, matching the range bounds.** Every
   range-filtered aggregate (daily, hourly, tools, subagents, `today`/`week`/`stats`)
   bucketed days with a UTC `substr(timestamp, 1, 10)`, while the frontend derives its
@@ -128,6 +95,30 @@
   daily figures were already correct.
 - Stat cards fit one row: the 8th card wrapped at any window size because 8 cards at the 160px minimum exceeded the 1352px container.
 - Pricing "as of" date is August 2026; the rates were already current.
+
+### Attribution
+
+- **Background subagent dispatches now carry their real name.** The scanner
+  learned an agent's name only from the parent's closing `toolUseResult`, which
+  carries `agentType` only when the dispatch ran synchronously and completed; a
+  background (`isAsync`) dispatch logs `status: "async_launched"` with no
+  `agentType`, so this fork fell back to the `async` placeholder for all of
+  them. The subagent's own transcript records carry `attributionAgent`
+  alongside `agentId`, so the name is now read from there too — independent of
+  how the dispatch was launched or whether it finished. A parent-supplied
+  `agentType` still wins; attribution only fills a row that has no name or only
+  the placeholder, and a late-arriving `async` launch record can no longer
+  overwrite a name already learned. A one-time backfill
+  (`agent_type_backfill_done` in `schema_meta`, mirroring the topic backfill)
+  names agents in existing databases without a full rescan — already-processed
+  transcripts are re-read for `attributionAgent` records only, leaving `turns`
+  untouched so token totals cannot drift. Ported from upstream PR #176
+  (thanks @retog).
+
+### Packaging
+
+- Homebrew formula now points at this fork's own `v1.5.6` tarball; it was pinned to upstream's `v1.5.4`, so `brew install` served upstream code.
+- `pyproject.toml` Homepage/Issues point at this fork, with upstream kept as a separate `Upstream` link.
 
 ### Project / docs
 
