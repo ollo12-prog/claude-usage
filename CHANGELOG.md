@@ -4,6 +4,34 @@
 
 ### Cost accuracy
 
+- **Sonnet 5 was overpriced by 50% from 2026-09-01.** Its $2/$10 launch rate was
+  announced as introductory through 2026-08-31, so both pricing tables carried a
+  dated switch to $3/$15. Anthropic has since made $2/$10 the standard price and
+  cancelled that increase — the switch fired anyway on September 1. The dated
+  constants are removed rather than re-dated: there is no intro period left to
+  model. Verified against platform.claude.com/docs/en/about-claude/pricing on
+  2026-09-02. A hand-edited Sonnet 5 row in the Pricing tab still overrides the
+  default until you hit Reset.
+
+### Dashboard
+
+- **"Last 7 Days" covered 8 calendar days** (and 30d/90d likewise covered 31/91).
+  The range is open-ended — the filter is `day >= start` with no end — so a start
+  of `today - 7` includes an eighth day. It is now `today - 6`, inclusive of
+  today.
+- **UTC / local toggle.** Claude's own usage page reports UTC while this
+  dashboard always reported in the machine's local calendar, so the two
+  disagreed by a day at every range edge. Every `day` field is bucketed
+  server-side, so the toggle is a server round-trip (`/api/data?tz=utc` swaps
+  `date(ts, 'localtime')` for the plain UTC slice) and the client derives its
+  range bounds and renders timestamps in the same calendar — mixing the two puts
+  a session on the far side of a range edge from its own turns. The hourly
+  chart's Local/UTC buttons now drive all of it, so they move into the filter bar
+  next to Range; the mode rides in `?tz=` alongside `?range=`. Local stays the
+  default.
+
+### Cost accuracy
+
 - **Fable 5.1 / Mythos 5.1 cache reads were billed at 4x.** These are the only
   models whose cache *hits* are not 0.1x the base input rate — they bill
   **$0.25/MTok** against Fable 5's $1.00 (input, output and both cache-write
