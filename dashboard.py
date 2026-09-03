@@ -1127,7 +1127,7 @@ function tzDisplayName(tzMode) {
   }
 }
 
-// ── Pricing (Anthropic API, August 2026 defaults; editable locally) ────────
+// ── Pricing (Anthropic API, September 2026 defaults; editable locally) ─────
 const PRICING_STORAGE_KEY = 'claudeUsagePricingOverrides';
 const DEFAULT_PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
@@ -1145,9 +1145,10 @@ const DEFAULT_PRICING = {
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
-  // Sonnet 5's introductory rate expires; see SONNET_5_* below (must stay in sync
-  // with cli.py's sonnet_5_pricing). Placeholder — overwritten at load.
-  'claude-sonnet-5':   { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  // $2/$10 was launch-introductory pricing through 2026-08-31; Anthropic made it
+  // the standard price and cancelled the scheduled increase to $3/$15
+  // (platform.claude.com/docs/en/about-claude/pricing, 2026-09-02).
+  'claude-sonnet-5':   { input:  2.00, output: 10.00, cache_write:  2.50, cache_read: 0.20, cache_write_1h: 4.00 },
   'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
@@ -1155,15 +1156,6 @@ const DEFAULT_PRICING = {
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
 };
-// Sonnet 5 launched on an introductory rate that expires; after that it bills at
-// the standard Sonnet rate. Resolved once at load against today's local date.
-// Keep in sync with cli.py's SONNET_5_* / sonnet_5_pricing().
-const SONNET_5_INTRO_ENDS = '2026-08-31';
-const SONNET_5_INTRO    = { input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.20, cache_write_1h: 4.00 };
-const SONNET_5_STANDARD = { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30, cache_write_1h: 6.00 };
-DEFAULT_PRICING['claude-sonnet-5'] =
-  localISODate(new Date()) <= SONNET_5_INTRO_ENDS ? SONNET_5_INTRO : SONNET_5_STANDARD;
-
 let PRICING = JSON.parse(JSON.stringify(DEFAULT_PRICING));
 let pricingOverrides = {};
 
@@ -1453,9 +1445,11 @@ function getRangeBounds(range) {
     const end = new Date(today.getFullYear(), today.getMonth(), 0);
     return { start: iso(start), end: iso(end) };
   }
+  // Inclusive of today, so "Last 7 Days" spans 7 calendar days: today-6 .. today.
+  // (end is null — the filter is `day >= start` — so today-7 would span 8.)
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
-  d.setDate(d.getDate() - days);
+  d.setDate(d.getDate() - (days - 1));
   return { start: iso(d), end: null };
 }
 

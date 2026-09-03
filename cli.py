@@ -24,18 +24,6 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 # day near midnight). Falls back to the UTC substr for any malformed timestamp.
 LOCAL_DAY = "COALESCE(date(timestamp, 'localtime'), substr(timestamp, 1, 10))"
 
-# Sonnet 5 launched on an introductory rate that expires; after that it bills at
-# the standard Sonnet rate. Resolved once at import against today's date.
-# ponytail: one dated model, so one dated constant — if a second model ever needs
-# this, replace it with an effective-dated tier list rather than a second special case.
-SONNET_5_INTRO_ENDS = date(2026, 8, 31)
-SONNET_5_INTRO    = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50, "cache_write_1h": 4.00}
-SONNET_5_STANDARD = {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00}
-
-def sonnet_5_pricing(day=None):
-    """Sonnet 5 rate active on `day` (a date; defaults to today)."""
-    return SONNET_5_INTRO if (day or date.today()) <= SONNET_5_INTRO_ENDS else SONNET_5_STANDARD
-
 PRICING = {
     # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
@@ -55,7 +43,10 @@ PRICING = {
     "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
     "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
     "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
-    "claude-sonnet-5":   sonnet_5_pricing(),
+    # $2/$10 was launch-introductory pricing through 2026-08-31; Anthropic made it
+    # the standard price and cancelled the scheduled increase to $3/$15
+    # (platform.claude.com/docs/en/about-claude/pricing, 2026-09-02).
+    "claude-sonnet-5":   {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50, "cache_write_1h": 4.00},
     "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},

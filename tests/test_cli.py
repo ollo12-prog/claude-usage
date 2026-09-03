@@ -75,23 +75,17 @@ class TestGetPricing(unittest.TestCase):
             self.assertEqual(p["cache_read"], 0.50, f"{model} cache_read wrong")
             self.assertEqual(p["cache_write"], 6.25, f"{model} cache_write wrong")
 
-    def test_sonnet_5_intro_rate_expires(self):
-        """Sonnet 5's introductory rate is dated: on the last intro day it bills
-        at $2/$10, and the day after at the standard $3/$15."""
-        last_intro_day = cli.SONNET_5_INTRO_ENDS
-        self.assertEqual(cli.sonnet_5_pricing(last_intro_day), cli.SONNET_5_INTRO)
-        self.assertEqual(cli.sonnet_5_pricing(last_intro_day + timedelta(days=1)),
-                         cli.SONNET_5_STANDARD)
-        self.assertEqual(cli.SONNET_5_INTRO["input"], 2.00)
-        self.assertEqual(cli.SONNET_5_INTRO["output"], 10.00)
-        self.assertEqual(cli.SONNET_5_STANDARD["input"], 3.00)
-        self.assertEqual(cli.SONNET_5_STANDARD["output"], 15.00)
-
-    def test_sonnet_5_table_entry_matches_today(self):
-        """The PRICING table holds the rate active today, not a frozen literal."""
-        self.assertEqual(PRICING["claude-sonnet-5"], cli.sonnet_5_pricing())
-        self.assertEqual(get_pricing("claude-sonnet-5-20260401"),
-                         cli.sonnet_5_pricing())
+    def test_sonnet_5_is_flat_2_10(self):
+        """$2/$10 is Sonnet 5's standard price — the scheduled 2026-09-01 rise to
+        $3/$15 was cancelled, so the rate must not be date-dependent. Dated model
+        ids must resolve to it too, not fall through to Sonnet 4.6's $3/$15."""
+        for model in ("claude-sonnet-5", "claude-sonnet-5-20260401"):
+            p = get_pricing(model)
+            self.assertEqual(p["input"], 2.00, f"{model} input price wrong")
+            self.assertEqual(p["output"], 10.00, f"{model} output price wrong")
+            self.assertEqual(p["cache_read"], 0.20, f"{model} cache_read wrong")
+            self.assertEqual(p["cache_write"], 2.50, f"{model} cache_write wrong")
+        self.assertEqual(PRICING["claude-sonnet-5"]["input"], 2.00)
 
     def test_opus_4_7_has_explicit_entry(self):
         """Regression guard for issue #61 — Opus 4.7 must be present."""

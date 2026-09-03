@@ -557,16 +557,9 @@ class TestPricingParity(unittest.TestCase):
         return prices
 
     def _expected_prices(self):
-        """CLI prices as they should appear in the JS *literal*.
-
-        `cli.PRICING["claude-sonnet-5"]` is resolved against today's date, but the
-        JS literal always holds the standard rate as a placeholder — the dashboard
-        overwrites it at load. The dated pair is checked separately below.
-        """
+        """CLI prices as they should appear in the JS literal."""
         import cli
-        expected = dict(cli.PRICING)
-        expected["claude-sonnet-5"] = cli.SONNET_5_STANDARD
-        return expected
+        return dict(cli.PRICING)
 
     def test_fable_51_cache_read_is_a_quarter_of_fable_5(self):
         """The 0.025x cache-hit rate, in both tables.
@@ -609,30 +602,20 @@ class TestPricingParity(unittest.TestCase):
                 msg=f"{model} output price mismatch"
             )
 
-    def test_sonnet_5_dated_pricing_matches(self):
-        """The intro/standard rates and the expiry date must agree across the
-        Python and JS copies — they are two hand-maintained tables (see AGENTS.md)."""
-        import re
+    def test_sonnet_5_cache_rates_match(self):
+        """Sonnet 5's full rate row must agree across the two hand-maintained
+        tables. The parity check above compares only input/output, so a drifted
+        cache_read would pass it."""
         import cli
-
-        ends = re.search(r"SONNET_5_INTRO_ENDS = '([\d-]+)'", HTML_TEMPLATE)
-        self.assertIsNotNone(ends, "SONNET_5_INTRO_ENDS missing from dashboard JS")
-        self.assertEqual(ends.group(1), cli.SONNET_5_INTRO_ENDS.isoformat(),
-                         "Sonnet 5 intro expiry date differs between cli.py and dashboard.py")
-
-        for name, py_rates in (("SONNET_5_INTRO", cli.SONNET_5_INTRO),
-                               ("SONNET_5_STANDARD", cli.SONNET_5_STANDARD)):
-            m = re.search(name + r" *= \{([^}]*)\}", HTML_TEMPLATE)
-            self.assertIsNotNone(m, f"{name} missing from dashboard JS")
-            # Parse the JS object body by field name rather than by position, so
-            # adding a rate (e.g. cache_write_1h) can't silently skip the check.
-            js_rates = {k: float(v) for k, v in
-                        re.findall(r"(\w+): *([\d.]+)", m.group(1))}
-            self.assertEqual(set(js_rates), set(py_rates),
-                             f"{name} has different rate KEYS in cli.py vs dashboard.py")
-            for field, py_value in py_rates.items():
-                self.assertAlmostEqual(py_value, js_rates[field],
-                                       msg=f"{name} {field} differs between cli.py and dashboard.py")
+        m = re.search(r"'claude-sonnet-5':\s*\{([^}]*)\}", HTML_TEMPLATE)
+        self.assertIsNotNone(m, "claude-sonnet-5 missing from dashboard JS")
+        js_rates = {k: float(v) for k, v in re.findall(r"(\w+): *([\d.]+)", m.group(1))}
+        py_rates = cli.PRICING["claude-sonnet-5"]
+        self.assertEqual(set(js_rates), set(py_rates),
+                         "claude-sonnet-5 has different rate KEYS in cli.py vs dashboard.py")
+        for field, py_value in py_rates.items():
+            self.assertAlmostEqual(py_value, js_rates[field],
+                                   msg=f"claude-sonnet-5 {field} differs between cli.py and dashboard.py")
 
 
 class TestMixedModelSessionCost(unittest.TestCase):
