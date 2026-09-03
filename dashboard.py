@@ -22,21 +22,39 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 # not be; the substr fallback covers a malformed/unparseable timestamp.
 # This is a localhost tool — server and browser share the machine. Serving with
 # --host to a browser in another timezone reintroduces an edge-day skew.
-def local_day(col="timestamp"):
+# `tz="utc"` reports in UTC instead — Claude's own usage page does, so the
+# dashboard offers a toggle (?tz=, wired through /api/data). Local stays default.
+def local_day(col="timestamp", tz="local"):
+    if tz == "utc":
+        return f"substr({col}, 1, 10)"
     return f"COALESCE(date({col}, 'localtime'), substr({col}, 1, 10))"
 
 
 LOCAL_DAY = local_day()
 
 
-def local_date(iso_utc_ts):
-    """The LOCAL_DAY conversion for a timestamp already read out of the DB, so
+def local_date(iso_utc_ts, tz="local"):
+    """The local_day conversion for a timestamp already read out of the DB, so
     day fields the client range-filters (`last_date`, `start_date`) agree with the
     SQL-side buckets instead of being a UTC slice. Falls back to the raw slice."""
+    if tz == "utc":
+        return (iso_utc_ts or "")[:10]
     try:
         return datetime.fromisoformat(iso_utc_ts.replace("Z", "+00:00")).astimezone().date().isoformat()
     except Exception:
         return (iso_utc_ts or "")[:10]
+
+
+def display_dt(iso_utc_ts, tz="local"):
+    """"YYYY-MM-DD HH:MM" in the display timezone. The stored slice is UTC, so
+    local mode parses and reformats; falls back to the slice if it won't parse."""
+    raw = (iso_utc_ts or "")[:16].replace("T", " ")
+    if tz == "utc" or not raw:
+        return raw
+    try:
+        return datetime.fromisoformat(iso_utc_ts.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return raw
 
 
 def _session_model_breakdowns(conn):
@@ -74,9 +92,13 @@ def _session_model_breakdowns(conn):
     return out
 
 
-def get_dashboard_data(db_path=DB_PATH):
+def get_dashboard_data(db_path=DB_PATH, tz="local"):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
+
+    # Day buckets follow the display timezone the client asked for, so its range
+    # bounds (localISODate) and these aggregates share one calendar.
+    LOCAL_DAY = local_day(tz=tz)
 
     conn = sqlite3.connect(db_path)
     # The dashboard reads while a background scan may be committing (cmd_dashboard
@@ -221,8 +243,8 @@ def get_dashboard_data(db_path=DB_PATH):
             "project":       r["project_name"] or "unknown",
             "branch":        r["git_branch"] or "",
             "topic":         r["topic"] or "",
-            "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     local_date(r["last_timestamp"]),
+            "last":          display_dt(r["last_timestamp"], tz),
+            "last_date":     local_date(r["last_timestamp"], tz),
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "tools":         [x for x in (r["tools"] or "").split(",") if x],
@@ -307,8 +329,8 @@ def get_dashboard_data(db_path=DB_PATH):
         "agent_type":     r["agent_type"],
         "description":    r["description"],
         "model":          r["model"],
-        "start":          (r["start_ts"] or "")[:16].replace("T", " "),
-        "start_date":     local_date(r["start_ts"]),
+        "start":          display_dt(r["start_ts"], tz),
+        "start_date":     local_date(r["start_ts"], tz),
         "input":          r["input"] or 0,
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
@@ -715,6 +737,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <option value="all">All Time</option>
     </select>
   </div>
+  <div class="filter-sep"></div>
+  <div class="filter-label" title="Calendar every day bucket, range bound and timestamp is reported in. Claude's own usage page reports UTC.">Time</div>
+  <div class="tz-group">
+    <button class="tz-btn" data-tz="local" onclick="setDisplayTZ('local')">Local</button>
+    <button class="tz-btn" data-tz="utc"   onclick="setDisplayTZ('utc')">UTC</button>
+  </div>
 </div>
 
 <nav id="jump-bar" aria-label="Jump to section">
@@ -760,10 +788,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="chart-header-right">
           <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
           <span class="chart-day-count" id="hourly-day-count"></span>
-          <div class="tz-group">
-            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
-            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
-          </div>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
@@ -1085,7 +1109,11 @@ let sessionsLimit = TABLE_STEPS[0];
 let projectLimit = TABLE_STEPS[0];
 let branchLimit = TABLE_STEPS[0];
 let dispatchesLimit = TABLE_STEPS[0];
-let hourlyTZ = 'local';  // 'local' or 'utc'
+// Display timezone for EVERY day/hour bucket on the dashboard: the server's day
+// buckets (/api/data?tz), the range bounds derived from them, the hourly chart
+// and rendered timestamps. Claude's own usage page reports UTC; this machine's
+// local day is the default. Read from ?tz= on first load.
+let displayTZ = 'local';  // 'local' or 'utc'
 
 // ── Peak-hour config ───────────────────────────────────────────────────────
 // Anthropic throttles Mon–Fri 05:00–11:00 PT. We approximate as fixed UTC hours
@@ -1408,6 +1436,9 @@ const VALID_RANGES = Object.keys(RANGE_LABELS);
 // Local calendar date as YYYY-MM-DD. NOT toISOString(), which formats in UTC and
 // shifts the day back in UTC+ timezones (that was the "This Month" bug, #151).
 function localISODate(d) {
+  // The display timezone, so range bounds land in the same calendar the server
+  // bucketed its `day` fields into (local_day). Mixing the two drifts a day.
+  if (displayTZ === 'utc') return d.toISOString().slice(0, 10);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
@@ -1453,6 +1484,10 @@ function getRangeBounds(range) {
   return { start: iso(d), end: null };
 }
 
+function readURLTZ() {
+  return new URLSearchParams(window.location.search).get('tz') === 'utc' ? 'utc' : 'local';
+}
+
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
   return VALID_RANGES.includes(p) ? p : '30d';
@@ -1467,11 +1502,16 @@ function setRange(range) {
   scheduleAutoRefresh();
 }
 
-function setHourlyTZ(mode) {
-  hourlyTZ = mode;
+function setDisplayTZ(mode) {
+  displayTZ = mode;
   document.querySelectorAll('.tz-btn').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.tz === mode)
   );
+  updateURL();
+  // Day buckets are computed server-side, so a TZ change needs a refetch —
+  // re-filtering the rows already in hand would keep the old calendar.
+  loadData();
+  scheduleAutoRefresh();
   applyFilter();
 }
 
@@ -1693,6 +1733,7 @@ function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
   const params = new URLSearchParams();
   if (selectedRange !== '30d') params.set('range', selectedRange);
+  if (displayTZ !== 'local') params.set('tz', displayTZ);
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
@@ -1897,7 +1938,7 @@ function applyFilter() {
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
     selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
-  const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
+  const hourlyAgg = aggregateHourly(hourlySrc, displayTZ);
 
   // Subagent breakdown by type (filtered by range + selected models)
   const subagentTypeMap = {};
@@ -2014,8 +2055,8 @@ function aggregateHourly(rows, tzMode) {
 function renderHourlyChart(agg) {
   const dayCountEl = document.getElementById('hourly-day-count');
   dayCountEl.textContent = agg.dayCount
-    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
-    : 'No data · ' + tzDisplayName(hourlyTZ);
+    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(displayTZ)
+    : 'No data · ' + tzDisplayName(displayTZ);
 
   const ctx = document.getElementById('chart-hourly').getContext('2d');
   if (charts.hourly) charts.hourly.destroy();
@@ -2073,7 +2114,7 @@ function renderHourlyChart(agg) {
               if (!items.length) return '';
               const idx = items[0].dataIndex;
               const h = agg.hours[idx];
-              const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
+              const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(displayTZ);
               return h.peak ? base + ' · Peak — Anthropic US hours' : base;
             },
             label: (item) => {
@@ -2836,7 +2877,7 @@ async function triggerRescan() {
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
-    const resp = await fetch('/api/data');
+    const resp = await fetch('/api/data?tz=' + encodeURIComponent(displayTZ));
     const d = await resp.json();
     if (d.error) {
       // The server binds and serves before the initial scan finishes, so on a
@@ -2859,9 +2900,9 @@ async function loadData() {
       selectedRange = readURLRange();
       const rangeSel = document.getElementById('range-select');
       if (rangeSel) rangeSel.value = selectedRange;
-      // Mark default TZ button active
+      // Mark the active TZ button (displayTZ was read from the URL pre-fetch)
       document.querySelectorAll('.tz-btn').forEach(btn =>
-        btn.classList.toggle('active', btn.dataset.tz === hourlyTZ)
+        btn.classList.toggle('active', btn.dataset.tz === displayTZ)
       );
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
@@ -3102,6 +3143,8 @@ function initSectionNav() {
 
 initFooterMeta();
 initSectionNav();
+// Before the first fetch: the server buckets days in this timezone.
+displayTZ = readURLTZ();
 loadData();
 scheduleAutoRefresh();
 </script>
@@ -3155,7 +3198,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # a monkey-patched dashboard.DB_PATH (same contract as /api/rescan). This
             # also keeps the dashboard reading the configured DB rather than a stale
             # path captured at import.
-            data = get_dashboard_data(DB_PATH)
+            data = get_dashboard_data(DB_PATH, tz=parse_qs(parsed.query).get("tz", [""])[0])
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

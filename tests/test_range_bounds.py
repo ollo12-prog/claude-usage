@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dashboard import HTML_TEMPLATE as _SRC
 
 HARNESS = """
+let displayTZ = 'local';  // localISODate follows the display timezone
 %(SRC)s
 // Count the days a bound spans, inclusive of today, by walking it forward —
 // independent of the arithmetic getRangeBounds used to build the start date.
@@ -26,11 +27,16 @@ function span(startISO) {
   }
   return n;
 }
-for (const [range, want] of [['7d', 7], ['30d', 30], ['90d', 90]]) {
-  const { start, end } = getRangeBounds(range);
-  if (end !== null) throw new Error(range + ' must be open-ended, got end=' + end);
-  const got = span(start);
-  if (got !== want) throw new Error(range + ' spans ' + got + ' days, want ' + want);
+// Both display timezones: the span is a count of the calendar days in that TZ,
+// so switching to UTC must not change how many days a range covers.
+for (const mode of ['local', 'utc']) {
+  displayTZ = mode;
+  for (const [range, want] of [['7d', 7], ['30d', 30], ['90d', 90]]) {
+    const { start, end } = getRangeBounds(range);
+    if (end !== null) throw new Error(range + ' must be open-ended, got end=' + end);
+    const got = span(start);
+    if (got !== want) throw new Error(mode + ' ' + range + ' spans ' + got + ' days, want ' + want);
+  }
 }
 console.log('ok');
 """
