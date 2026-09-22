@@ -585,6 +585,25 @@ class TestPricingParity(unittest.TestCase):
         self.assertLess(HTML_TEMPLATE.index("'claude-fable-5-1'"),
                         HTML_TEMPLATE.index("'claude-fable-5'"))
 
+    def test_opus_55_is_not_priced_as_opus_5(self):
+        """"claude-opus-5" is a prefix of "claude-opus-5-5": a missing or
+        misordered key bills Opus 5.5 at Opus 5 rates (2.5x on cache reads)."""
+        import cli
+        want = (4.00, 20.00, 0.20, 5.00, 8.00)
+        for mid in ("claude-opus-5-5", "claude-opus-5-5-20260922", "anthropic/claude-opus-5-5"):
+            p = cli.get_pricing(mid)
+            self.assertEqual((p["input"], p["output"], p["cache_read"], p["cache_write"],
+                              p["cache_write_1h"]), want, mid)
+        self.assertEqual(cli.get_pricing("claude-opus-5")["input"], 5.00)
+        js = dict(re.findall(
+            r"'(claude-opus-5-5|claude-opus-5)':\s*\{[^}]*cache_read:\s*([\d.]+)",
+            HTML_TEMPLATE))
+        self.assertEqual(float(js["claude-opus-5-5"]), 0.20)
+        self.assertLess(HTML_TEMPLATE.index("'claude-opus-5-5'"),
+                        HTML_TEMPLATE.index("'claude-opus-5'"))
+        self.assertLess(HTML_TEMPLATE.index("includes('opus-5-5')"),
+                        HTML_TEMPLATE.index("includes('opus'))"))
+
     def test_all_cli_models_in_dashboard(self):
         js_prices = self._extract_js_pricing()
         for model in self._expected_prices():

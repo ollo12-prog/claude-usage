@@ -1169,6 +1169,9 @@ const DEFAULT_PRICING = {
   'claude-mythos-5-1': { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 0.25, cache_write_1h: 20.00 },
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00, cache_write_1h: 20.00 },
+  // Opus 5.5: 20% under Opus 5, cache hits at 0.05x input. Above the Opus 5 row
+  // or the first-wins prefix scan prices it as Opus 5.
+  'claude-opus-5-5':   { input:  4.00, output: 20.00, cache_write:  5.00, cache_read: 0.20, cache_write_1h:  8.00 },
   // Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
   // 'opus' substring fallback so it stays pinned if the 4.x rates ever diverge.
   'claude-opus-5':     { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50, cache_write_1h: 10.00 },
@@ -1279,6 +1282,7 @@ function getPricing(model) {
   const m = model.toLowerCase();
   if (m.includes('fable-5-1') || m.includes('mythos-5-1')) return PRICING['claude-fable-5-1'];
   if (m.includes('fable') || m.includes('mythos')) return PRICING['claude-fable-5'];
+  if (m.includes('opus-5-5')) return PRICING['claude-opus-5-5'];
   if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];

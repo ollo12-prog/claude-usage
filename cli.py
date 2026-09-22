@@ -36,6 +36,10 @@ PRICING = {
     "claude-mythos-5-1": {"input": 10.00, "output": 50.00, "cache_read": 0.25, "cache_write": 12.50, "cache_write_1h": 20.00},
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
     "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50, "cache_write_1h": 20.00},
+    # Opus 5.5 is 20% under Opus 5 and prices cache hits at 0.05x input ($0.20)
+    # (platform.claude.com/docs/en/about-claude/pricing, 2026-09-22). Must sit
+    # above "claude-opus-5", or the first-wins prefix scan bills it as Opus 5.
+    "claude-opus-5-5":   {"input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00, "cache_write_1h": 8.00},
     # Opus 5 bills at Opus 4.8's rates. Listed explicitly rather than left to the
     # "opus" substring fallback so it stays pinned if the 4.x rates ever diverge.
     "claude-opus-5":     {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25, "cache_write_1h": 10.00},
@@ -69,6 +73,8 @@ def get_pricing(model):
         return PRICING["claude-fable-5-1"]
     if "fable" in m or "mythos" in m:
         return PRICING["claude-fable-5"]
+    if "opus-5-5" in m:
+        return PRICING["claude-opus-5-5"]
     if "opus" in m:
         return PRICING["claude-opus-4-8"]
     if "sonnet" in m:
