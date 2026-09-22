@@ -412,6 +412,8 @@ def _backfill_mcp_attribution(conn, jsonl_files):
     the columns existed (INSERT OR IGNORE never rewrites them, and an incremental
     scan skips their files). Only empty columns are written, so token totals
     cannot drift. Returns column values written."""
+    if not conn.execute("SELECT 1 FROM turns LIMIT 1").fetchone():
+        return 0  # fresh DB: the walk parses these inline, skip the corpus read
     before = conn.total_changes
     for filepath in jsonl_files:
         try:
@@ -430,7 +432,11 @@ def _backfill_mcp_attribution(conn, jsonl_files):
                     for col, key in _MCP_COLUMNS:
                         if record.get(key):
                             conn.execute(
+                                # The message_id terms are restated so SQLite can use
+                                # the partial unique index; without them every UPDATE
+                                # is a full table scan (minutes on a real corpus).
                                 f"UPDATE turns SET {col} = ? WHERE message_id = ? "
+                                "AND message_id IS NOT NULL AND message_id != '' "
                                 f"AND ({col} IS NULL OR {col} = '')",
                                 (record[key], mid))
         except Exception as e:
