@@ -53,6 +53,14 @@ class TestMcpAttribution(unittest.TestCase):
             VALUES ('sess-1', '2026-04-08T10:00:00Z', 'claude-sonnet-4-6',
                     100, 50, 10, 5, NULL, '/tmp', 'msg-mcp')
         """)
+        # A pre-column advisor row: its synthetic id matches no transcript record.
+        conn.execute("""
+            INSERT INTO turns (session_id, timestamp, model, input_tokens,
+                output_tokens, cache_read_tokens, cache_creation_tokens,
+                tool_name, cwd, message_id)
+            VALUES ('sess-1', '2026-04-08T10:00:00Z', 'claude-fable-5',
+                    9, 9, 0, 0, NULL, '/tmp', 'advisor:msg-mcp:1')
+        """)
         conn.execute("INSERT INTO processed_files (path, mtime, lines) VALUES (?, ?, ?)",
                      (str(self.transcript), os.path.getmtime(self.transcript), 2))
         for key in ("advisor_reparse_done", "topic_backfill_done", "agent_type_backfill_done"):
@@ -61,6 +69,7 @@ class TestMcpAttribution(unittest.TestCase):
         conn.close()
         scan(projects_dir=self.projects, db_path=db, verbose=False)
         self.assertEqual(self._row(db, "msg-mcp"), ("plane", "workitem", "bc-integration"))
+        self.assertEqual(self._row(db, "advisor:msg-mcp:1"), ("plane", "workitem", "bc-integration"))
 
     def test_dashboard_groups_cost_by_server(self):
         import dashboard

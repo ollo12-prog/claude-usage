@@ -441,6 +441,16 @@ def _backfill_mcp_attribution(conn, jsonl_files):
                                 (record[key], mid))
         except Exception as e:
             print(f"  Warning: error reading {filepath}: {e}")
+    # Advisor rows carry a synthetic `advisor:<parent id>:<idx>` message_id no
+    # transcript contains, so copy each column down from the parent turn instead.
+    for col, _ in _MCP_COLUMNS:
+        conn.execute(f"""
+            UPDATE turns SET {col} = (
+                SELECT p.{col} FROM turns p
+                WHERE p.message_id = rtrim(rtrim(substr(turns.message_id, 9), '0123456789'), ':')
+                  AND p.session_id = turns.session_id)
+            WHERE message_id LIKE 'advisor:%' AND ({col} IS NULL OR {col} = '')
+        """)
     conn.commit()
     return conn.total_changes - before
 
