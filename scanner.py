@@ -6,6 +6,7 @@ import json
 import os
 import glob
 import sqlite3
+from functools import lru_cache
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -145,6 +146,13 @@ def init_db(conn):
         "tool_calls": "TEXT",
         "is_subagent": "INTEGER DEFAULT 0",
         "agent_id": "TEXT",
+        # MCP/plugin attribution (idea from upstream PR #179): the assistant turn
+        # that consumed an MCP tool's result carries attributionMcpServer/-Tool,
+        # and attributionPlugin when a plugin drove it. Filled for old rows by
+        # _backfill_mcp_attribution.
+        "mcp_server": "TEXT",
+        "mcp_tool": "TEXT",
+        "plugin": "TEXT",
     }
     for col, spec in migrations.items():
         if col not in existing_cols:
@@ -320,15 +328,115 @@ def _backfill_agent_types(conn, jsonl_files):
     return len(found)
 
 
-def project_name_from_cwd(cwd):
-    """Derive a friendly project name from cwd path."""
-    if not cwd:
-        return "unknown"
+def _project_name_from_path(path):
     # Normalize to forward slashes, take last 2 components
-    parts = cwd.replace("\\", "/").rstrip("/").split("/")
+    parts = path.replace("\\", "/").rstrip("/").split("/")
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return parts[-1] if parts else "unknown"
+
+
+@lru_cache(maxsize=4096)
+def worktree_main_root(cwd):
+    """The main checkout a linked git worktree belongs to, or None.
+
+    Idea from upstream PR #179, deliberately narrower: only a *linked worktree*
+    (whose private git dir has a `commondir` file) folds into its main repo.
+    Ordinary repos and their subfolders keep the path heuristic, so no existing
+    project name changes. Claude Code's `<repo>/.claude/worktrees/<name>` layout
+    is recognised from the path alone, so deleted worktrees still group. Paths
+    are normalised, never resolve()d: on Windows that follows junctions.
+    """
+    norm = cwd.replace("\\", "/")
+    marker = "/.claude/worktrees/"
+    if marker in norm:
+        return norm.split(marker, 1)[0]
+    p = Path(cwd)
+    for candidate in (p, *p.parents):
+        git = candidate / ".git"
+        try:
+            if git.is_dir():
+                return None  # a main checkout, not a worktree
+            if not git.is_file():
+                continue
+            content = git.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if not content.startswith("gitdir:"):
+            return None
+        git_dir = Path(os.path.normpath(candidate / content[len("gitdir:"):].strip()))
+        try:
+            rel = (git_dir / "commondir").read_text(encoding="utf-8").strip()
+        except OSError:
+            return None  # a submodule, or a worktree whose git dir is gone
+        common = Path(os.path.normpath(git_dir / rel))
+        return str(common.parent) if common.name == ".git" else None
+    return None
+
+
+def project_name_from_cwd(cwd):
+    """Derive a friendly project name from cwd path (worktrees fold into their repo)."""
+    if not cwd:
+        return "unknown"
+    return _project_name_from_path(worktree_main_root(cwd) or cwd)
+
+
+def _backfill_worktree_projects(conn):
+    """One-time rename of sessions scanned before worktrees folded into their repo.
+
+    Recomputes project_name from each session's first cwd (the rule a new scan
+    uses) and rewrites only rows whose name changes. Outside a worktree the name
+    is unchanged, so only worktree sessions move. Returns sessions updated.
+    """
+    rows = conn.execute("""
+        SELECT s.session_id, s.project_name, (
+            SELECT t.cwd FROM turns t
+            WHERE t.session_id = s.session_id AND t.cwd IS NOT NULL AND t.cwd != ''
+            ORDER BY t.timestamp, t.id LIMIT 1) AS cwd
+        FROM sessions s
+    """).fetchall()
+    updates = [(new, sid) for sid, old, cwd in rows
+               if cwd and (new := project_name_from_cwd(cwd)) != old]
+    conn.executemany("UPDATE sessions SET project_name = ? WHERE session_id = ?", updates)
+    conn.commit()
+    return len(updates)
+
+
+_MCP_COLUMNS = (("mcp_server", "attributionMcpServer"),
+                ("mcp_tool", "attributionMcpTool"),
+                ("plugin", "attributionPlugin"))
+
+
+def _backfill_mcp_attribution(conn, jsonl_files):
+    """One-time fill of turns.mcp_server/mcp_tool/plugin for rows ingested before
+    the columns existed (INSERT OR IGNORE never rewrites them, and an incremental
+    scan skips their files). Only empty columns are written, so token totals
+    cannot drift. Returns column values written."""
+    before = conn.total_changes
+    for filepath in jsonl_files:
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"attributionMcp' not in line and '"attributionPlugin"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = record.get("message")
+                    mid = msg.get("id") if isinstance(msg, dict) else None
+                    if not mid:
+                        continue
+                    for col, key in _MCP_COLUMNS:
+                        if record.get(key):
+                            conn.execute(
+                                f"UPDATE turns SET {col} = ? WHERE message_id = ? "
+                                f"AND ({col} IS NULL OR {col} = '')",
+                                (record[key], mid))
+        except Exception as e:
+            print(f"  Warning: error reading {filepath}: {e}")
+    conn.commit()
+    return conn.total_changes - before
 
 
 def is_subagent_record(record, source_path=""):
@@ -620,6 +728,9 @@ def parse_jsonl_file(filepath, start_line=0):
                         "tool_calls": json.dumps(tool_calls) if tool_calls else None,
                         "is_subagent": 1 if is_subagent_record(record, filepath) else 0,
                         "agent_id": record_agent_id(record),
+                        "mcp_server": record.get("attributionMcpServer") or "",
+                        "mcp_tool": record.get("attributionMcpTool") or "",
+                        "plugin": record.get("attributionPlugin") or "",
                     }
 
                     # Dedup: last record per message_id wins (final usage tallies)
@@ -812,8 +923,8 @@ def insert_turns(conn, turns):
              cache_creation_5m_tokens, cache_creation_1h_tokens,
              tool_name, cwd, message_id, duration_ms, stop_reason,
              service_tier, inference_geo, is_sidechain, is_compact_summary,
-             tool_calls, is_subagent, agent_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tool_calls, is_subagent, agent_id, mcp_server, mcp_tool, plugin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
@@ -823,7 +934,8 @@ def insert_turns(conn, turns):
          t.get("duration_ms", 0), t.get("stop_reason", ""),
          t.get("service_tier", ""), t.get("inference_geo", ""),
          t.get("is_sidechain", 0), t.get("is_compact_summary", 0),
-         t.get("tool_calls"), t.get("is_subagent", 0), t.get("agent_id"))
+         t.get("tool_calls"), t.get("is_subagent", 0), t.get("agent_id"),
+         t.get("mcp_server") or "", t.get("mcp_tool") or "", t.get("plugin") or "")
         for t in turns
     ])
 
@@ -888,6 +1000,21 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
         if verbose and named:
             print(f"Backfilled name for {named} existing subagent dispatch(es).")
+
+    if any_dir_found and _meta_get(conn, "mcp_backfill_done") != "1":
+        filled = _backfill_mcp_attribution(conn, jsonl_files)
+        _meta_set(conn, "mcp_backfill_done", "1")
+        conn.commit()
+        if verbose and filled:
+            print(f"Backfilled MCP/plugin attribution ({filled} value(s)) on existing turns.")
+
+    # Worktree sessions fold into their main repo's project; rename old ones once.
+    if _meta_get(conn, "worktree_project_backfill_done") != "1":
+        moved = _backfill_worktree_projects(conn)
+        _meta_set(conn, "worktree_project_backfill_done", "1")
+        conn.commit()
+        if verbose and moved:
+            print(f"Folded {moved} worktree session(s) into their main repo's project.")
 
     new_files = 0
     updated_files = 0

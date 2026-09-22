@@ -211,6 +211,36 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "turns":          r["turns"] or 0,
     } for r in tool_rows]
 
+    # ── MCP server per-day per-model: turns that consumed an MCP tool result ──
+    turn_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)")}
+    mcp_rows = conn.execute(f"""
+        SELECT
+            {LOCAL_DAY}                     as day,
+            COALESCE(model, 'unknown')      as model,
+            mcp_server                      as tool,
+            SUM(input_tokens)               as input,
+            SUM(output_tokens)              as output,
+            SUM(cache_read_tokens)          as cache_read,
+            SUM(cache_creation_tokens)      as cache_creation,
+            SUM(cache_creation_1h_tokens)   as cache_creation_1h,
+            COUNT(*)                        as turns
+        FROM turns
+        WHERE mcp_server IS NOT NULL AND mcp_server != ''
+        GROUP BY day, model, mcp_server
+    """).fetchall() if "mcp_server" in turn_cols else []
+
+    mcp_by_model = [{
+        "day":            r["day"],
+        "model":          r["model"],
+        "tool":           r["tool"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in mcp_rows]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
@@ -352,6 +382,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "daily_by_model":  daily_by_model,
         "hourly_by_model": hourly_by_model,
         "tool_by_model":   tool_by_model,
+        "mcp_by_model":    mcp_by_model,
         "sessions_all":    sessions_all,
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
@@ -922,6 +953,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th>Est. Cost</th>
       </tr></thead>
       <tbody id="tool-cost-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Cost by MCP Server</div>
+    <table>
+      <thead><tr>
+        <th>MCP server</th>
+        <th>Turns</th>
+        <th>Input</th>
+        <th>Output</th>
+        <th>Cache Read</th>
+        <th>Cache Creation</th>
+        <th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="mcp-cost-body"></tbody>
     </table>
   </div>
   <div class="table-card">
@@ -1923,9 +1969,10 @@ function applyFilter() {
   };
   const costTotals = aggregateCostBreakdown(filteredSessions);
 
-  // By tool: aggregate from server-side per-day tool data
+  // By tool, and by MCP server (same row shape): aggregate server-side per-day rows
+  const byCostKey = rows => {
   const toolMap = {};
-  const filteredTools = (rawData.tool_by_model || []).filter(r =>
+  const filteredTools = (rows || []).filter(r =>
     selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
   for (const r of filteredTools) {
@@ -1938,7 +1985,10 @@ function applyFilter() {
     t.turns          += r.turns;
     t.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
   }
-  const byTool = Object.values(toolMap).sort((a, b) => b.cost - a.cost);
+  return Object.values(toolMap).sort((a, b) => b.cost - a.cost);
+  };
+  const byTool = byCostKey(rawData.tool_by_model);
+  const byMcp = byCostKey(rawData.mcp_by_model);
   const hotSessions = sessionSignals(filteredSessions);
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
@@ -1993,6 +2043,7 @@ function applyFilter() {
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
   renderToolCostTable(lastByTool.slice(0, 15));
+  renderToolCostTable(byMcp, 'mcp-cost-body');
   renderSessionSignalsTable(hotSessions.slice(0, 15));
   renderProjectCostTable(lastByProject.slice(0, 20));
   renderProjectBranchCostTable(lastByProjectBranch.slice(0, 20));
@@ -2383,8 +2434,8 @@ function renderSessionsTable(sessions) {
   renderTableToggle('sessions-foot', sessions.length, sessionsLimit, 'lessSessionRows', 'moreSessionRows', 'exportSessionsCSV');
 }
 
-function renderToolCostTable(rows) {
-  document.getElementById('tool-cost-body').innerHTML = rows.map(t => {
+function renderToolCostTable(rows, bodyId = 'tool-cost-body') {
+  document.getElementById(bodyId).innerHTML = rows.map(t => {
     const costCell = t.cost ? `<td class="cost">${fmtCost(t.cost)}</td>` : `<td class="cost-na">n/a</td>`;
     return `<tr>
       <td>${esc(t.tool)}</td>
