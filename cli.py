@@ -75,7 +75,9 @@ def get_pricing(model):
         return PRICING["claude-fable-5"]
     if "opus-5-5" in m:
         return PRICING["claude-opus-5-5"]
-    if "opus" in m:
+    # "opus-", not "opus": local builds that merely end in opus
+    # (qwen3.6-40b-claude-46-opus) must stay unpriced, not bill at Opus rates.
+    if "opus-" in m:
         return PRICING["claude-opus-4-8"]
     if "sonnet" in m:
         return PRICING["claude-sonnet-4-6"]

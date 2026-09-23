@@ -457,7 +457,7 @@ class TestHTMLTemplate(unittest.TestCase):
 
     def test_template_has_substring_matching(self):
         """Verify getPricing falls back to substring match for unknown models."""
-        self.assertIn("m.includes('opus')", HTML_TEMPLATE)
+        self.assertIn("m.includes('opus-')", HTML_TEMPLATE)
         self.assertIn("m.includes('sonnet')", HTML_TEMPLATE)
         self.assertIn("m.includes('haiku')", HTML_TEMPLATE)
 

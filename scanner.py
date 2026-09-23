@@ -694,6 +694,10 @@ def parse_jsonl_file(filepath, start_line=0):
                         meta["last_timestamp"] = timestamp
                     if git_branch and not meta["git_branch"]:
                         meta["git_branch"] = git_branch
+                    # A title record may have created this entry first, leaving the
+                    # "unknown" placeholder (title records carry no cwd).
+                    if cwd and meta["project_name"] == "unknown":
+                        meta["project_name"] = project_name_from_cwd(cwd)
 
                 if rtype == "assistant":
                     msg = record.get("message", {})
@@ -933,7 +937,7 @@ def upsert_sessions(conn, sessions):
 
 def insert_turns(conn, turns):
     conn.executemany("""
-        INSERT OR IGNORE INTO turns
+        INSERT INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
              cache_read_tokens, cache_creation_tokens,
              cache_creation_5m_tokens, cache_creation_1h_tokens,
@@ -941,6 +945,22 @@ def insert_turns(conn, turns):
              service_tier, inference_geo, is_sidechain, is_compact_summary,
              tool_calls, is_subagent, agent_id, mcp_server, mcp_tool, plugin)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        -- Claude Code writes a response's usage more than once while it streams;
+        -- only the last record is final. A scan landing between them stores the
+        -- partial tallies, so the next scan must correct the row (upstream PR #169,
+        -- plus the 5m/1h cache-write columns it omitted).
+        ON CONFLICT(message_id) WHERE message_id IS NOT NULL AND message_id != ''
+        DO UPDATE SET
+            timestamp                = excluded.timestamp,
+            model                    = excluded.model,
+            input_tokens             = excluded.input_tokens,
+            output_tokens            = excluded.output_tokens,
+            cache_read_tokens        = excluded.cache_read_tokens,
+            cache_creation_tokens    = excluded.cache_creation_tokens,
+            cache_creation_5m_tokens = excluded.cache_creation_5m_tokens,
+            cache_creation_1h_tokens = excluded.cache_creation_1h_tokens,
+            tool_name                = excluded.tool_name
+        WHERE excluded.output_tokens > turns.output_tokens
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
@@ -999,6 +1019,15 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
         if verbose and cleared:
             print(f"One-time re-parse of {cleared} transcript(s) to pick up advisor turns.")
+
+    # Same one-shot re-read so turns frozen mid-stream by the old INSERT OR IGNORE
+    # meet their final record under the upsert in insert_turns.
+    if any_dir_found and _meta_get(conn, "final_tallies_reparse_done") != "1":
+        cleared = conn.execute("DELETE FROM processed_files").rowcount
+        _meta_set(conn, "final_tallies_reparse_done", "1")
+        conn.commit()
+        if verbose and cleared:
+            print(f"One-time re-parse of {cleared} transcript(s) to correct turns stored mid-stream.")
 
     if any_dir_found and _meta_get(conn, "topic_backfill_done") != "1":
         filled = _backfill_topics(conn, jsonl_files)

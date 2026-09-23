@@ -58,7 +58,7 @@ By default the scanner walks both `~/.claude/projects/` and the Xcode coding-ass
 - **`sessions`** — aggregated per session (denormalized totals + chosen primary model).
 - **`processed_files`** — incremental-scan tracking: `(path, mtime, lines)`. A file is skipped if its mtime matches; if it grew, only lines past the stored `lines` count are processed.
 
-A conditional unique index on `turns.message_id` (where non-empty) lets `INSERT OR IGNORE` cheaply dedupe replays across rescans.
+A conditional unique index on `turns.message_id` (where non-empty) lets `insert_turns` upsert cheaply: a replay is a no-op, and a later record with a larger output count (the final tally of a response a previous scan caught mid-stream) overwrites the partial row.
 
 ### Non-obvious invariants
 
@@ -66,7 +66,7 @@ These three things will bite you if you don't know them:
 
 1. **Streaming dedupe by `message.id`.** Claude Code writes multiple JSONL records per API response — only the *last* one for a given `message.id` has the final usage tallies. `parse_jsonl_file` keeps the last record per `message_id` in a dict; earlier records are discarded. Don't sum across records of the same `message_id`.
 
-2. **Session totals are recomputed from `turns` at the end of `scan()`.** During an incremental scan `upsert_sessions` adds tokens additively, but `insert_turns` uses `INSERT OR IGNORE` against the `message_id` unique index — so if a turn is a duplicate, session totals would drift. The final `UPDATE sessions ... (SELECT SUM ... FROM turns)` block reconciles this. Preserve it if you refactor scan logic.
+2. **Session totals are recomputed from `turns` at the end of `scan()`.** During an incremental scan `upsert_sessions` adds tokens additively, but `insert_turns` upserts against the `message_id` unique index (a duplicate adds no row, a mid-stream correction rewrites one) — so session totals would drift. The final `UPDATE sessions ... (SELECT SUM ... FROM turns)` block reconciles this. Preserve it if you refactor scan logic.
 
 3. **Session primary model priority is opus > sonnet > haiku** (`_model_priority` in [scanner.py](scanner.py)). This prevents a subagent's haiku turn from overwriting the session's opus model when an existing session is updated. Per-turn model is always honored in the `turns` table; only the session-level summary uses the priority.
 

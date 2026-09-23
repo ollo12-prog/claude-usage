@@ -1316,7 +1316,7 @@ function isBillable(model) {
   if (!model) return false;
   const m = model.toLowerCase();
   return m.includes('fable') || m.includes('mythos') ||
-         m.includes('opus') || m.includes('sonnet') || m.includes('haiku');
+         m.includes('opus-') || m.includes('sonnet') || m.includes('haiku');
 }
 
 function getPricing(model) {
@@ -1329,7 +1329,7 @@ function getPricing(model) {
   if (m.includes('fable-5-1') || m.includes('mythos-5-1')) return PRICING['claude-fable-5-1'];
   if (m.includes('fable') || m.includes('mythos')) return PRICING['claude-fable-5'];
   if (m.includes('opus-5-5')) return PRICING['claude-opus-5-5'];
-  if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
+  if (m.includes('opus-'))  return PRICING['claude-opus-4-8']; // 'opus-': a local '...-opus' build is not billed
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
   return null;
