@@ -745,6 +745,31 @@ class TestParseJsonlFileLineCount(unittest.TestCase):
         _, _, _, line_count = parse_jsonl_file(path)
         self.assertEqual(line_count, 0)
 
+    def test_partial_trailing_line_is_reread_next_scan(self):
+        # Scan lands while the final record is half-written: it must not be
+        # counted, or the incremental rescan skips it and the turn keeps its
+        # mid-stream output tally forever.
+        path = os.path.join(self.tmpdir, "partial.jsonl")
+        early = _make_assistant_record(message_id="m1", output_tokens=2)
+        final = _make_assistant_record(message_id="m1", output_tokens=1775)
+        with open(path, "w") as f:
+            f.write(early + "\n" + final[:40])
+        _, turns, _, n = parse_jsonl_file(path)
+        self.assertEqual(n, 1)
+        self.assertEqual([t["output_tokens"] for t in turns], [2])
+        with open(path, "w") as f:
+            f.write(early + "\n" + final + "\n")
+        _, turns, _, n = parse_jsonl_file(path, start_line=n)
+        self.assertEqual(n, 2)
+        self.assertEqual([t["output_tokens"] for t in turns], [1775])
+
+    def test_complete_trailing_line_without_newline_counts(self):
+        path = os.path.join(self.tmpdir, "nonl.jsonl")
+        with open(path, "w") as f:
+            f.write(_make_user_record() + "\n" + _make_assistant_record())
+        _, turns, _, n = parse_jsonl_file(path)
+        self.assertEqual((n, len(turns)), (2, 1))
+
 
 class TestSessionTopic(unittest.TestCase):
     """Topic extraction from custom-title / ai-title records (#147)."""

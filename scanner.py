@@ -621,12 +621,18 @@ def parse_jsonl_file(filepath, start_line=0):
             for line_count, line in enumerate(f, 1):
                 if line_count <= start_line:
                     continue
+                complete = line.endswith("\n")
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    if not complete:
+                        # Trailing line still being written: leave it out of
+                        # line_count so the next incremental scan re-reads it.
+                        line_count -= 1
+                        break
                     continue
 
                 rtype = record.get("type")
