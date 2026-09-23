@@ -537,6 +537,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     mask: url("icon.svg") no-repeat center / contain;
   }
   header .meta { color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; margin-right: 20px; }
+  .header-actions { display: flex; align-items: center; gap: 12px; }
+  .autorefresh-label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .autorefresh-label input { cursor: pointer; accent-color: var(--accent); }
   #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -739,7 +742,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <h1>Claude Code Usage</h1>
   </div>
   <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
+  <div class="header-actions">
+    <label class="autorefresh-label" title="Rescan every 30 seconds while the selected range includes today. Off by default.">
+      <input type="checkbox" id="autorefresh-cb" onchange="onAutoRefreshToggle()"> Auto-refresh
+    </label>
+    <button id="rescan-btn" onclick="triggerRescan()" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -2918,6 +2926,7 @@ function exportDispatchesCSV() {
 // ── Rescan ────────────────────────────────────────────────────────────────
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
+  if (btn.disabled) return; // a scan (manual or auto) is already running
   btn.disabled = true;
   btn.textContent = '\u21bb Scanning...';
   try {
@@ -2947,8 +2956,8 @@ async function loadData() {
       if (rawData === null) setTimeout(loadData, 3000);
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? '<br>Auto-refresh in 30s' : '';
-    document.getElementById('meta').innerHTML = 'Updated: ' + esc(d.generated_at) + refreshNote;
+    lastGeneratedAt = d.generated_at;
+    renderMeta();
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -2983,11 +2992,28 @@ async function loadData() {
 }
 
 let autoRefreshTimer = null;
+let lastGeneratedAt = null;
+// Auto-refresh is opt-in: the header checkbox is unchecked by default.
+function autoRefreshOn() {
+  const cb = document.getElementById('autorefresh-cb');
+  return !!(cb && cb.checked);
+}
+function renderMeta() {
+  if (lastGeneratedAt === null) return;
+  const note = (autoRefreshOn() && rangeIncludesToday(selectedRange)) ? '<br>Auto-rescan every 30s' : '';
+  document.getElementById('meta').innerHTML = 'Updated: ' + esc(lastGeneratedAt) + note;
+}
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-  if (rangeIncludesToday(selectedRange)) {
-    autoRefreshTimer = setInterval(loadData, 30000);
+  // Rescan, not just reload: nothing else writes the DB after startup, so a
+  // bare reload would re-read the same rows forever.
+  if (autoRefreshOn() && rangeIncludesToday(selectedRange)) {
+    autoRefreshTimer = setInterval(triggerRescan, 30000);
   }
+  renderMeta();
+}
+function onAutoRefreshToggle() {
+  scheduleAutoRefresh();
 }
 
 loadPricing();
