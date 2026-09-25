@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.7.1 — 2026-09-25
 
 ### Cost accuracy
 
