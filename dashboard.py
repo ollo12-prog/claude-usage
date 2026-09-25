@@ -10,7 +10,20 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
-from scanner import VERSION, init_db
+from scanner import VERSION, init_db, surcharge_sql, PRICE_MULT_SQL
+
+SURCHARGE = surcharge_sql()
+SURCHARGE_T = surcharge_sql("t.")
+
+
+def _surcharge(r):
+    """The fast/US premium of an aggregate row as extra tokens (see
+    scanner.PRICE_MULT_SQL), or None when there is none — the common case, so
+    the payload stays small. The client prices it at the row's normal rates."""
+    x = {"input": r["x_inp"] or 0, "output": r["x_out"] or 0,
+         "cache_read": r["x_cr"] or 0, "cache_creation": r["x_cc"] or 0,
+         "cache_creation_1h": r["x_cc1h"] or 0}
+    return x if any(x.values()) else None
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
@@ -70,14 +83,14 @@ def _session_model_breakdowns(conn):
     than one model — a subagent on a cheaper model, or a mid-session /model
     switch. The client attaches this to each session as ``by_model``.
     """
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT session_id,
                COALESCE(NULLIF(model, ''), 'unknown') as model,
                SUM(input_tokens)          as input,
                SUM(output_tokens)         as output,
                SUM(cache_read_tokens)     as cache_read,
                SUM(cache_creation_tokens) as cache_creation,
-               SUM(cache_creation_1h_tokens) as cache_creation_1h
+               SUM(cache_creation_1h_tokens) as cache_creation_1h, {SURCHARGE}
         FROM turns
         GROUP BY session_id, COALESCE(NULLIF(model, ''), 'unknown')
     """).fetchall()
@@ -91,6 +104,7 @@ def _session_model_breakdowns(conn):
             "cache_read":     r["cache_read"] or 0,
             "cache_creation": r["cache_creation"] or 0,
             "cache_creation_1h": r["cache_creation_1h"] or 0,
+            "x": _surcharge(r),
         })
     return out
 
@@ -139,6 +153,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
             SUM(cache_read_tokens)     as cache_read,
             SUM(cache_creation_tokens) as cache_creation,
             SUM(cache_creation_1h_tokens) as cache_creation_1h,
+            {SURCHARGE},
             COUNT(*)                   as turns
         FROM turns
         GROUP BY day, COALESCE(NULLIF(model, ''), 'unknown')
@@ -153,6 +168,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
         "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "x": _surcharge(r),
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
@@ -193,6 +209,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
             SUM(cache_read_tokens)          as cache_read,
             SUM(cache_creation_tokens)      as cache_creation,
             SUM(cache_creation_1h_tokens)      as cache_creation_1h,
+            {SURCHARGE},
             COUNT(*)                        as turns
         FROM turns
         GROUP BY day, model, tool
@@ -208,6 +225,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
         "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "x": _surcharge(r),
         "turns":          r["turns"] or 0,
     } for r in tool_rows]
 
@@ -223,6 +241,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
             SUM(cache_read_tokens)          as cache_read,
             SUM(cache_creation_tokens)      as cache_creation,
             SUM(cache_creation_1h_tokens)   as cache_creation_1h,
+            {SURCHARGE},
             COUNT(*)                        as turns
         FROM turns
         WHERE mcp_server IS NOT NULL AND mcp_server != ''
@@ -238,6 +257,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
         "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "x": _surcharge(r),
         "turns":          r["turns"] or 0,
     } for r in mcp_rows]
 
@@ -309,6 +329,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
             SUM(t.cache_creation_1h_tokens)            as cache_creation_1h,
+            {SURCHARGE_T},
             COUNT(DISTINCT t.agent_id)               as dispatches,
             COUNT(*)                                 as turns
         FROM turns t
@@ -327,6 +348,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
         "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "x": _surcharge(r),
         "dispatches":     r["dispatches"] or 0,
         "turns":          r["turns"] or 0,
     } for r in subagent_daily_rows]
@@ -344,6 +366,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
             SUM(t.cache_creation_1h_tokens)            as cache_creation_1h,
+            {SURCHARGE_T},
             COUNT(*)                                 as turns,
             a.dispatched_in_session                  as parent_session,
             a.total_duration_ms                      as duration_ms,
@@ -369,6 +392,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
         "cache_creation_1h": r["cache_creation_1h"] or 0,
+        "x": _surcharge(r),
         "turns":          r["turns"] or 0,
         "duration_ms":    r["duration_ms"],
         "tool_uses":      r["tool_uses"],
@@ -420,6 +444,14 @@ def get_session_detail(session_id, db_path=DB_PATH):
     def turn_expr(col, default):
         return col if col in turn_cols else f"{default} as {col}"
 
+    # Per-turn fast/US premium factor (mult - 1). A column an old DB lacks reads
+    # as NULL, which neither CASE matches, so that modifier prices at 1x while
+    # the other still applies.
+    xm_expr = PRICE_MULT_SQL.format(t="") + " - 1"
+    for col in ("speed", "inference_geo"):
+        if col not in turn_cols:
+            xm_expr = xm_expr.replace(col, "NULL")
+
     turns = conn.execute(f"""
         SELECT
             timestamp, COALESCE(model, 'unknown') as model,
@@ -434,6 +466,7 @@ def get_session_detail(session_id, db_path=DB_PATH):
             {turn_expr('is_sidechain', '0')},
             {turn_expr('is_compact_summary', '0')},
             {turn_expr('tool_calls', 'NULL')},
+            {xm_expr} as xm,
             COALESCE(tool_name, '<none>') as tool_name,
             cwd
         FROM turns
@@ -473,6 +506,12 @@ def get_session_detail(session_id, db_path=DB_PATH):
             "cache_creation": r["cache_creation_tokens"] or 0,
             "cache_creation_5m": r["cache_creation_5m_tokens"] or 0,
             "cache_creation_1h": r["cache_creation_1h_tokens"] or 0,
+            "x": {"input": (r["input_tokens"] or 0) * r["xm"],
+                  "output": (r["output_tokens"] or 0) * r["xm"],
+                  "cache_read": (r["cache_read_tokens"] or 0) * r["xm"],
+                  "cache_creation": (r["cache_creation_tokens"] or 0) * r["xm"],
+                  "cache_creation_1h": (r["cache_creation_1h_tokens"] or 0) * r["xm"],
+                  } if r["xm"] else None,
             "duration_ms":    r["duration_ms"] or 0,
             "stop_reason":    r["stop_reason"] or "",
             "service_tier":   r["service_tier"] or "",
@@ -1369,11 +1408,31 @@ function calcCostBreakdown(model, inp, out, cacheRead, cacheCreation, cacheCreat
 // x summed tokens overcharges any multi-model session (a subagent on a cheaper
 // model, or a mid-session /model switch). Falls back to the single-model path when
 // no breakdown is present (older payloads, or non-session rows).
+// Cost of a server row: its tokens plus `x`, the fast-mode / US-only premium
+// carried as extra tokens (scanner.PRICE_MULT_SQL). Cost is linear in tokens, so
+// pricing x at the row's own rates is exact, edited rates included.
+function rowCostBreakdown(r) {
+  const c = calcCostBreakdown(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
+  const x = r.x;
+  if (!x) return c;
+  const e = calcCostBreakdown(r.model, x.input, x.output, x.cache_read, x.cache_creation, x.cache_creation_1h);
+  for (const k of Object.keys(c)) c[k] += e[k];
+  return c;
+}
+function rowCost(r) { return rowCostBreakdown(r).total; }
+
+// Sum b's surcharge into a's, for client-side merges of server rows.
+function addSurcharge(a, b) {
+  if (!b.x) return;
+  a.x = a.x || { input: 0, output: 0, cache_read: 0, cache_creation: 0, cache_creation_1h: 0 };
+  for (const k of Object.keys(a.x)) a.x[k] += b.x[k] || 0;
+}
+
 function sessionCostBreakdown(s) {
   const bm = s && s.by_model;
   if (Array.isArray(bm) && bm.length) {
     return bm.reduce((acc, m) => {
-      const c = calcCostBreakdown(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
+      const c = rowCostBreakdown(m);
       acc.input += c.input;
       acc.output += c.output;
       acc.cache_read += c.cache_read;
@@ -1383,7 +1442,7 @@ function sessionCostBreakdown(s) {
       return acc;
     }, { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0, cache_savings: 0 });
   }
-  return calcCostBreakdown(s.model, s.input, s.output, s.cache_read, s.cache_creation, s.cache_creation_1h);
+  return rowCostBreakdown(s);
 }
 
 // Total $ cost of a session, priced per-model (see sessionCostBreakdown).
@@ -1899,7 +1958,7 @@ function applyFilter() {
     d.output         += r.output;
     d.cache_read     += r.cache_read;
     d.cache_creation += r.cache_creation;
-    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
+    d.cost           += rowCost(r);
   }
   const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
 
@@ -1915,6 +1974,7 @@ function applyFilter() {
     // Must carry the 1h split too: every byModel consumer prices with it, and an
     // undefined field silently falls back to the 5m rate (see calcCostBreakdown).
     m.cache_creation_1h += r.cache_creation_1h || 0;
+    addSurcharge(m, r);
     m.turns          += r.turns;
   }
 
@@ -1970,7 +2030,7 @@ function applyFilter() {
     output:         byModel.reduce((s, m) => s + m.output, 0),
     cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
-    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h), 0),
+    cost:           byModel.reduce((s, m) => s + rowCost(m), 0),
     subagent_tokens: (rawData.subagent_by_type || [])
       .filter(r => selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end))
       .reduce((s, r) => s + r.input + r.output + r.cache_read + r.cache_creation, 0),
@@ -1991,7 +2051,7 @@ function applyFilter() {
     t.cache_read     += r.cache_read;
     t.cache_creation += r.cache_creation;
     t.turns          += r.turns;
-    t.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation, r.cache_creation_1h);
+    t.cost           += rowCost(r);
   }
   return Object.values(toolMap).sort((a, b) => b.cost - a.cost);
   };
@@ -2342,7 +2402,7 @@ function renderTopDispatches(rows) {
   const shown = rows.slice(0, shownCount(dispatchesLimit, rows.length));
   body.innerHTML = shown.map(d => {
     const tokensTotal = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
+    const cost = rowCost(d);
     const costCell = isBillable(d.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -2565,7 +2625,7 @@ function renderSessionDetail(d) {
     ['Cache Savings', fmtCost(c.cache_savings)],
   ].map(([label, value]) => `<div class="detail-stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join('');
   document.getElementById('session-detail-body').innerHTML = d.turns.map((t, i) => {
-    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
+    const cost = rowCost(t);
     return `<tr>
       <td class="muted">${esc(t.timestamp)}</td>
       <td>${toolCellHTML(t, i)}</td>
@@ -2598,7 +2658,7 @@ function renderSessionToolBreakdown(turns) {
     row.output += t.output || 0;
     row.cache_read += t.cache_read || 0;
     row.cache_creation += t.cache_creation || 0;
-    row.cost += calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
+    row.cost += rowCost(t);
   }
   const rows = Object.values(byTool).sort((a, b) => b.cost - a.cost);
   const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
@@ -2632,7 +2692,7 @@ function renderSessionTimeline(turns) {
         {
           label: 'Cost',
           type: 'line',
-          data: turns.map(t => calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h)),
+          data: turns.map(t => rowCost(t)),
           borderColor: '#4ade80',
           backgroundColor: 'rgba(74,222,128,0.18)',
           pointRadius: 3,
@@ -2711,8 +2771,8 @@ function sortModels(byModel) {
   return [...byModel].sort((a, b) => {
     let av, bv;
     if (modelSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation, a.cache_creation_1h);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation, b.cache_creation_1h);
+      av = rowCost(a);
+      bv = rowCost(b);
     } else {
       av = a[modelSortCol] ?? 0;
       bv = b[modelSortCol] ?? 0;
@@ -2727,7 +2787,7 @@ function renderModelCostTable(byModel) {
   const sorted = sortModels(byModel);
   const shown = sorted.slice(0, shownCount(modelLimit, sorted.length));
   document.getElementById('model-cost-body').innerHTML = shown.map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
+    const cost = rowCost(m);
     const costCell = isBillable(m.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
@@ -2870,7 +2930,7 @@ function downloadCSV(reportType, header, rows) {
 function exportModelCSV() {
   const header = ['Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = sortModels(lastByModel).map(m => {
-    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation, m.cache_creation_1h);
+    const cost = rowCost(m);
     return [m.model, m.turns, m.input, m.output, m.cache_read, m.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('cost_by_model', header, rows);
@@ -2889,7 +2949,7 @@ function exportSessionTurnsCSV() {
   if (!selectedSessionDetail) return;
   const header = ['Time', 'Tool', 'Model', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Cache 5m', 'Cache 1h', 'Duration (ms)', 'Stop Reason', 'Service Tier', 'Inference Geo', 'Sidechain', 'Compact Summary', 'Est. Cost'];
   const rows = selectedSessionDetail.turns.map(t => {
-    const cost = calcCost(t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_1h);
+    const cost = rowCost(t);
     return [t.timestamp, t.tool, t.model, t.input, t.output, t.cache_read, t.cache_creation, t.cache_creation_5m || 0, t.cache_creation_1h || 0, t.duration_ms || 0, t.stop_reason || '', t.service_tier || '', t.inference_geo || '', t.is_sidechain ? 1 : 0, t.is_compact_summary ? 1 : 0, cost.toFixed(4)];
   });
   downloadCSV('session_' + selectedSessionDetail.session.display_id + '_turns', header, rows);
@@ -2915,7 +2975,7 @@ function exportDispatchesCSV() {
   const header = ['Type', 'Agent ID', 'Description', 'Started', 'Model', 'Turns', 'Tool Uses', 'Duration (ms)', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Total Tokens', 'Est. Cost', 'Status'];
   const rows = lastFilteredDispatches.map(d => {
     const total = d.input + d.output + d.cache_read + d.cache_creation;
-    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation, d.cache_creation_1h);
+    const cost = rowCost(d);
     return [d.agent_type, d.agent_id, d.description || '', d.start, d.model, d.turns,
             d.tool_uses != null ? d.tool_uses : '', d.duration_ms != null ? d.duration_ms : '',
             d.input, d.output, d.cache_read, d.cache_creation, total, cost.toFixed(4), d.status || ''];

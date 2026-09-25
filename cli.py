@@ -14,7 +14,9 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, date, timedelta
 
-from scanner import VERSION
+from scanner import VERSION, surcharge_sql
+
+SURCHARGE = surcharge_sql()
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
@@ -106,9 +108,12 @@ def calc_cost(model, inp, out, cache_read, cache_creation, cache_creation_1h=0):
 
 def row_cost(r):
     """Cost of one aggregated query row. Every cli query selects the same column
-    aliases (inp/out/cr/cc/cc1h), so the 1h split is applied in one place."""
-    return calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0,
-                     r["cc"] or 0, r["cc1h"] or 0)
+    aliases (inp/out/cr/cc/cc1h, plus the fast/US surcharge x_* from
+    scanner.surcharge_sql), so the 1h split and the surcharge apply in one place."""
+    return (calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0,
+                      r["cc"] or 0, r["cc1h"] or 0) +
+            calc_cost(r["model"], r["x_inp"] or 0, r["x_out"] or 0, r["x_cr"] or 0,
+                      r["x_cc"] or 0, r["x_cc1h"] or 0))
 
 def fmt(n):
     if n >= 1_000_000:
@@ -159,6 +164,7 @@ def cmd_today():
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
             SUM(cache_creation_1h_tokens) as cc1h,
+            {SURCHARGE},
             COUNT(*)                   as turns
         FROM turns
         WHERE {LOCAL_DAY} = ?
@@ -233,6 +239,7 @@ def cmd_week():
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
             SUM(cache_creation_1h_tokens) as cc1h,
+            {SURCHARGE},
             COUNT(*)                   as turns
         FROM turns
         WHERE {LOCAL_DAY} BETWEEN ? AND ?
@@ -247,6 +254,7 @@ def cmd_week():
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
             SUM(cache_creation_1h_tokens) as cc1h,
+            {SURCHARGE},
             COUNT(*)                   as turns
         FROM turns
         WHERE {LOCAL_DAY} BETWEEN ? AND ?
@@ -326,19 +334,20 @@ def cmd_stats():
     """).fetchone()
 
     # All-time totals from turns (more accurate — per-turn model attribution)
-    totals = conn.execute("""
+    totals = conn.execute(f"""
         SELECT
             SUM(input_tokens)             as inp,
             SUM(output_tokens)            as out,
             SUM(cache_read_tokens)        as cr,
             SUM(cache_creation_tokens)    as cc,
             SUM(cache_creation_1h_tokens) as cc1h,
+            {SURCHARGE},
             COUNT(*)                      as turns
         FROM turns
     """).fetchone()
 
     # By model from turns (each turn has the actual model used)
-    by_model = conn.execute("""
+    by_model = conn.execute(f"""
         SELECT
             COALESCE(model, 'unknown') as model,
             SUM(input_tokens)          as inp,
@@ -346,6 +355,7 @@ def cmd_stats():
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
             SUM(cache_creation_1h_tokens) as cc1h,
+            {SURCHARGE},
             COUNT(*)                   as turns,
             COUNT(DISTINCT session_id) as sessions
         FROM turns

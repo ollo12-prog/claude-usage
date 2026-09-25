@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Cost accuracy
+
+- **Fast mode and US-only inference were billed at standard rates.** A turn whose `usage.speed` is `"fast"` bills 2x on every token class (Opus 5.5 $8/$40, Opus 5 and 4.8 $10/$50), and one whose `usage.inference_geo` is `"us"` bills 1.1x. The two stack, so a turn with both bills 2.2x. Verified against platform.claude.com/docs/en/about-claude/pricing, fast-mode and data-residency docs on 2026-09-24. The scanner now records `speed` (new `turns.speed` column); `inference_geo` was already stored but never priced. Both the CLI and the dashboard apply the multiplier per turn, including the session drilldown and every cost table. Advisor turns don't inherit the parent's fast mode, since the advisor is a separate inference.
+- Existing databases get `speed` backfilled **once** on the next scan (`speed_backfill_done` marker). Only lines containing `"fast"` are parsed, so the pass is cheap.
+
+### Project / docs
+
+- `scripts/falsify_price_modifiers.py` breaks each piece of the fast/US pricing in a temp copy of the repo and checks that `tests/test_price_modifiers.py` fails for every one.
+
 ## v1.7.0 — 2026-09-24
 
 ### Cost accuracy

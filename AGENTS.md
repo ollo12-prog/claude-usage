@@ -80,6 +80,8 @@ Pricing is duplicated in two places that **must stay in sync**:
 
 `get_pricing` / `getPricing` resolve in three tiers: exact match → `startswith` (handles date-suffixed model IDs like `claude-opus-4-7-20260215`) → substring fallback on `opus` / `sonnet` / `haiku`. Models that don't match any tier return `None` and are billed at $0 (shown as `n/a`) — this is intentional so local/3rd-party models (gemma, glm, etc.) aren't charged at Sonnet rates.
 
+Fast mode (`usage.speed == "fast"`, 2x) and US-only inference (`usage.inference_geo == "us"`, 1.1x) multiply every token class of a turn and stack. The rule lives once, as `PRICE_MULT_SQL` in [scanner.py](scanner.py). Aggregates carry the premium as extra tokens (`surcharge_sql()`: `SUM(tokens * (mult - 1))`), priced at the row's normal rates: the CLI's `row_cost` adds it, and dashboard rows carry it as `x` (null when zero), priced by the JS `rowCost`. Cost is linear in tokens, so this is exact even with rates edited in the dashboard. A client-side merge of server rows must call `addSurcharge` or the premium is dropped. `scripts/falsify_price_modifiers.py` breaks each piece and checks `tests/test_price_modifiers.py` goes red.
+
 ### Dashboard server
 
 `http.server.BaseHTTPRequestHandler`-based, two endpoints:

@@ -30,6 +30,25 @@ DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 # for one.
 ADVISOR_ID_PREFIX = "advisor:"
 
+# Per-turn price multiplier, applied to every token class: fast mode bills 2x
+# (usage.speed == "fast") and US-only inference 1.1x (usage.inference_geo ==
+# "us"); the two stack (platform.claude.com/docs/en/about-claude/pricing,
+# 2026-09-24). Kept as SQL so every aggregate can price it; `{t}` is an optional
+# table-alias prefix. Cost is linear in tokens, so the surcharge is carried as
+# extra tokens, SUM(tokens * (mult - 1)), priced at the row's normal rates.
+PRICE_MULT_SQL = ("(CASE WHEN {t}speed = 'fast' THEN 2.0 ELSE 1.0 END"
+                  " * CASE WHEN {t}inference_geo = 'us' THEN 1.1 ELSE 1.0 END)")
+_SURCHARGE_COLS = (("input_tokens", "x_inp"), ("output_tokens", "x_out"),
+                   ("cache_read_tokens", "x_cr"), ("cache_creation_tokens", "x_cc"),
+                   ("cache_creation_1h_tokens", "x_cc1h"))
+
+
+def surcharge_sql(t=""):
+    """SELECT terms x_inp/x_out/x_cr/x_cc/x_cc1h: each token class's premium
+    over standard pricing, as tokens. All zero unless a turn ran fast or US-only."""
+    extra = PRICE_MULT_SQL.format(t=t) + " - 1"
+    return ", ".join(f"SUM({t}{col} * ({extra})) as {alias}" for col, alias in _SURCHARGE_COLS)
+
 
 def is_advisor_turn(turn):
     """True if this turn was minted from an advisor_message iteration."""
@@ -141,6 +160,9 @@ def init_db(conn):
         "stop_reason": "TEXT",
         "service_tier": "TEXT",
         "inference_geo": "TEXT",
+        # usage.speed: "fast" bills 2x (see PRICE_MULT_SQL). Filled for old rows
+        # by _backfill_speed.
+        "speed": "TEXT",
         "is_sidechain": "INTEGER DEFAULT 0",
         "is_compact_summary": "INTEGER DEFAULT 0",
         "tool_calls": "TEXT",
@@ -405,6 +427,41 @@ def _backfill_worktree_projects(conn):
 _MCP_COLUMNS = (("mcp_server", "attributionMcpServer"),
                 ("mcp_tool", "attributionMcpTool"),
                 ("plugin", "attributionPlugin"))
+
+
+def _backfill_speed(conn, jsonl_files):
+    """One-time fill of turns.speed = 'fast' for rows ingested before the column
+    existed (the upsert only rewrites a row whose output grew, and an incremental
+    scan skips its file). Standard-speed rows need nothing: only 'fast' is priced.
+    Advisor rows are left alone: the parent's speed doesn't apply to them.
+    Returns rows updated."""
+    if not conn.execute("SELECT 1 FROM turns LIMIT 1").fetchone():
+        return 0  # fresh DB: the walk parses speed inline
+    before = conn.total_changes
+    for filepath in jsonl_files:
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"fast"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = record.get("message")
+                    if not isinstance(msg, dict) or not msg.get("id"):
+                        continue
+                    if (msg.get("usage") or {}).get("speed") != "fast":
+                        continue
+                    conn.execute(
+                        "UPDATE turns SET speed = 'fast' WHERE message_id = ? "
+                        "AND message_id IS NOT NULL AND message_id != '' "
+                        "AND (speed IS NULL OR speed != 'fast')",
+                        (msg["id"],))
+        except Exception as e:
+            print(f"  Warning: error reading {filepath}: {e}")
+    conn.commit()
+    return conn.total_changes - before
 
 
 def _backfill_mcp_attribution(conn, jsonl_files):
@@ -749,6 +806,7 @@ def parse_jsonl_file(filepath, start_line=0):
                         "stop_reason": record.get("stopReason") or msg.get("stop_reason") or "",
                         "service_tier": usage.get("service_tier", "") or "",
                         "inference_geo": usage.get("inference_geo", "") or "",
+                        "speed": usage.get("speed", "") or "",
                         "is_sidechain": 1 if record.get("isSidechain") else 0,
                         "is_compact_summary": 1 if record.get("isCompactSummary") else 0,
                         "tool_calls": json.dumps(tool_calls) if tool_calls else None,
@@ -798,6 +856,10 @@ def parse_jsonl_file(filepath, start_line=0):
                             cache_creation_tokens=it.get("cache_creation_input_tokens", 0) or 0,
                             cache_creation_5m_tokens=0,
                             cache_creation_1h_tokens=0,
+                            # A separate inference on the advisor's model: the
+                            # parent's fast mode doesn't carry over (and Fable,
+                            # the usual advisor, has no fast mode).
+                            speed="",
                             tool_name="advisor",
                             tool_calls=None,
                             message_id="%s%s:%d" % (ADVISOR_ID_PREFIX, message_id, idx),
@@ -949,8 +1011,8 @@ def insert_turns(conn, turns):
              cache_creation_5m_tokens, cache_creation_1h_tokens,
              tool_name, cwd, message_id, duration_ms, stop_reason,
              service_tier, inference_geo, is_sidechain, is_compact_summary,
-             tool_calls, is_subagent, agent_id, mcp_server, mcp_tool, plugin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tool_calls, is_subagent, agent_id, mcp_server, mcp_tool, plugin, speed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         -- Claude Code writes a response's usage more than once while it streams;
         -- only the last record is final. A scan landing between them stores the
         -- partial tallies, so the next scan must correct the row (upstream PR #169,
@@ -965,7 +1027,9 @@ def insert_turns(conn, turns):
             cache_creation_tokens    = excluded.cache_creation_tokens,
             cache_creation_5m_tokens = excluded.cache_creation_5m_tokens,
             cache_creation_1h_tokens = excluded.cache_creation_1h_tokens,
-            tool_name                = excluded.tool_name
+            tool_name                = excluded.tool_name,
+            inference_geo            = excluded.inference_geo,
+            speed                    = excluded.speed
         WHERE excluded.output_tokens > turns.output_tokens
     """, [
         (t["session_id"], t["timestamp"], t["model"],
@@ -977,7 +1041,8 @@ def insert_turns(conn, turns):
          t.get("service_tier", ""), t.get("inference_geo", ""),
          t.get("is_sidechain", 0), t.get("is_compact_summary", 0),
          t.get("tool_calls"), t.get("is_subagent", 0), t.get("agent_id"),
-         t.get("mcp_server") or "", t.get("mcp_tool") or "", t.get("plugin") or "")
+         t.get("mcp_server") or "", t.get("mcp_tool") or "", t.get("plugin") or "",
+         t.get("speed") or "")
         for t in turns
     ])
 
@@ -1051,6 +1116,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
         if verbose and named:
             print(f"Backfilled name for {named} existing subagent dispatch(es).")
+
+    if any_dir_found and _meta_get(conn, "speed_backfill_done") != "1":
+        filled = _backfill_speed(conn, jsonl_files)
+        _meta_set(conn, "speed_backfill_done", "1")
+        conn.commit()
+        if verbose and filled:
+            print(f"Backfilled fast-mode speed on {filled} existing turn(s).")
 
     if any_dir_found and _meta_get(conn, "mcp_backfill_done") != "1":
         filled = _backfill_mcp_attribution(conn, jsonl_files)

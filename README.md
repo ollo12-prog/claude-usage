@@ -20,6 +20,7 @@ This is a hard fork of [phuryn/claude-usage](https://github.com/phuryn/claude-us
 
 - **Advisor calls are counted.** An `advisor` call is a separate inference on another model. Its tokens sit in `usage.iterations[]`, not in the top-level usage, so upstream billed them at $0. On two real sessions that was a **40% undercount**.
 - **1-hour cache writes cost 2× input**, not the 5-minute rate of 1.25×.
+- **Fast mode and US-only inference are priced.** A turn that ran with `speed: "fast"` bills 2×, one pinned to `inference_geo: "us"` bills 1.1×, and a turn with both bills 2.2×.
 - **Mixed-model sessions are priced per model.** Upstream priced the whole session at its primary model's rate, so Haiku subagent tokens were billed as Opus. One real session came out **9.6% high**.
 - **Current price sheet.** The table includes Opus 5.5 (cache reads at 0.05×), Fable/Mythos 5.1 (cache reads at 0.025×), Opus 5, and Sonnet 5 at $2/$10.
 - **Range edges.** "Last 7 days" really is 7 days, and days are bucketed in local time. The old UTC bucketing was **$85 off** on one real 7-day window. A **UTC/local toggle** lines the numbers up with Claude's own usage page, which reports in UTC.
@@ -116,6 +117,7 @@ Each turn is priced at its own model's rate, and the results are summed. For eac
 - `input_tokens`, `output_tokens`, `cache_read_input_tokens`
 - `cache_creation_input_tokens`, split by `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`
 - each `usage.iterations[]` entry of type `advisor_message`, stored as its own turn priced at `advisorModel`
+- `usage.speed` and `usage.inference_geo`: fast mode multiplies every token class by 2, US-only inference by 1.1, and the two stack
 
 Claude Code writes several records per streamed response, so only the last record for each `message.id` counts.
 
@@ -135,7 +137,7 @@ These are Anthropic API list prices, checked against [platform.claude.com pricin
 
 Model IDs resolve by exact match first, then by prefix (so dated IDs work), then by family keyword. Anything that doesn't match, such as local models or other vendors, shows as `n/a` and costs $0, so it never gets billed at Claude rates by accident.
 
-**Limitations.** These figures are API-equivalent estimates. A Pro or Max subscription doesn't bill per token. Two price modifiers aren't applied yet: fast mode (2× on Opus) and the 1.1× US data-residency multiplier. Sessions that use either will show a lower cost than the real one.
+**Limitations.** These figures are API-equivalent estimates. A Pro or Max subscription doesn't bill per token.
 
 ---
 
