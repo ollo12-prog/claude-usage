@@ -84,7 +84,7 @@ Pricing is duplicated in two places that **must stay in sync**:
 
 `http.server.BaseHTTPRequestHandler`-based, two endpoints:
 - `GET /api/data` → JSON snapshot from `get_dashboard_data()`. Returns *all* history; client-side filters by date range and model.
-- `POST /api/rescan` → deletes the DB and runs a full rescan. Passes `db_path` and `projects_dirs` explicitly so tests that monkey-patch the module globals work — scan's default arg values are frozen at def time, so don't switch to bare defaults.
+- `POST /api/rescan` → runs an incremental scan. It never deletes the DB: that file is the only durable history once Claude Code prunes old transcripts. Passes `db_path` and `projects_dirs` explicitly so tests that monkey-patch the module globals work — scan's default arg values are frozen at def time, so don't switch to bare defaults.
 
 The entire UI lives in `HTML_TEMPLATE` as a raw string. Chart.js is loaded from CDN.
 

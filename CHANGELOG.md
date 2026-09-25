@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.7.0 — 2026-09-24
+
+### Cost accuracy
+
+- **Opus 5.5 was billed at Opus 5 rates.** `claude-opus-5` is a prefix of `claude-opus-5-5`, so the first-wins prefix scan priced it at $5/$25 with 0.1x cache reads. Opus 5.5 now has its own row: $4/$20, with cache hits at 0.05x input ($0.20). Verified against platform.claude.com/docs/en/about-claude/pricing on 2026-09-22.
+- **Scans that landed mid-stream froze a turn's partial output count.** Turn inserts now upsert and keep the larger output tally, and a one-time re-read repairs rows that were already frozen. Ported from phuryn/claude-usage#169, adding the 5m/1h cache-write columns that PR left out (thanks @NickAme03).
+- **A half-written trailing line was counted as processed.** The next incremental scan resumed after it, so the message's final usage record was never read. An unparseable last line with no newline is now left for the next scan.
+- A local model named like `qwen3.6-40b-claude-46-opus` no longer bills at Opus rates. The keyword fallback now matches `opus-`, not a bare `opus`.
+
+### Attribution
+
+- **Cost by MCP server.** Turns record `attributionMcpServer` / `attributionMcpTool` / `attributionPlugin`, so the turn that consumed an MCP tool's result is charged to that server. A new "Cost by MCP Server" table shows the totals. A one-time backfill attributes transcripts that were already scanned, including their advisor rows.
+- **Worktree sessions fold into their repo.** A linked git worktree, or a `.claude/worktrees/<name>` path, now counts under its main repo. A one-time backfill renames existing worktree sessions. Sessions started in a plain repo subfolder keep their name. Both items narrowed from phuryn/claude-usage#179 (thanks @albarsil).
+- 167 sessions named `unknown` in one real database now get their project. A session that opened with a title record kept the placeholder even after a record with a `cwd` arrived.
+
+### Dashboard
+
+- **Auto-refresh is an opt-in checkbox that rescans.** Before, it ran unconditionally but only re-read the database, which nothing writes after startup, so it never showed new usage. When checked, each 30 s tick runs the same incremental scan as the Rescan button.
+
+### Project / docs
+
+- Rewrote the README for this fork: current pricing table with the 1h cache-write column, what the fork changes and adds, corrected Rescan and auto-refresh behaviour, and a new screenshot built from synthetic data.
+- AGENTS.md no longer says `/api/rescan` deletes the database. It runs an incremental scan and never deletes rows.
+
 ## v1.6.0 — 2026-09-02
 
 ### Cost accuracy

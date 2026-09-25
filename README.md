@@ -1,77 +1,78 @@
-# Claude Code Usage Dashboard
+# claude-usage
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![claude-code](https://img.shields.io/badge/claude--code-black?style=flat-square)](https://claude.ai/code)
-[![Companion: burnstop](https://img.shields.io/badge/companion-burnstop-blue?style=flat-square)](https://github.com/phuryn/burnstop)
+[![tests](https://img.shields.io/github/actions/workflow/status/ollo12-prog/claude-usage/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/ollo12-prog/claude-usage/actions/workflows/tests.yml)
+[![release](https://img.shields.io/github/v/release/ollo12-prog/claude-usage?style=flat-square)](https://github.com/ollo12-prog/claude-usage/releases)
 
-**Pro and Max subscribers get a progress bar. This gives you the full picture.**
+**A local dashboard for what your Claude Code usage costs at API prices, per turn and per model.**
 
-Claude Code writes detailed usage logs locally — token counts, models, sessions, projects — regardless of your plan. This dashboard reads those logs and turns them into charts and cost estimates. Works on API, Pro, and Max plans.
+Claude Code logs every API response to local JSONL files: tokens, model, cache writes, tools, subagents, MCP servers. This tool reads those logs into SQLite and shows where the tokens went. It runs on your machine and uses only the Python standard library. Your usage data never leaves it: the page only loads Chart.js from a CDN and checks GitHub for new releases. It works whether you're on an API key, Pro, or Max.
 
-![Claude Usage Dashboard](docs/screenshot.png)
+![Dashboard with 30 days of synthetic usage data](docs/screenshot.png)
 
-Available as a **web app** (`python cli.py dashboard`).
-
-**Created by:** [The Product Compass Newsletter](https://www.productcompass.pm)
+<sub>Screenshot uses synthetic demo data.</sub>
 
 ---
 
-## What this tracks
+## Why this fork
 
-Works on **API, Pro, and Max plans** — Claude Code writes local usage logs regardless of subscription type. This tool reads those logs and gives you visibility that Anthropic's UI doesn't provide.
+This is a hard fork of [phuryn/claude-usage](https://github.com/phuryn/claude-usage). It split off at upstream v1.5.5, began as fixes to the cost math, and has since grown into a separate tool. The main difference is accuracy. Most of these fixes turned up when the numbers were reconciled against real sessions, either against Claude Code's own `total_cost_usd` or turn by turn against a second ledger:
 
-Captures usage from:
-- **Claude Code CLI** (`claude` command in terminal)
-- **VS Code extension** (Claude Code sidebar)
-- **Dispatched Code sessions** (sessions routed through Claude Code)
+- **Advisor calls are counted.** An `advisor` call is a separate inference on another model. Its tokens sit in `usage.iterations[]`, not in the top-level usage, so upstream billed them at $0. On two real sessions that was a **40% undercount**.
+- **1-hour cache writes cost 2× input**, not the 5-minute rate of 1.25×.
+- **Mixed-model sessions are priced per model.** Upstream priced the whole session at its primary model's rate, so Haiku subagent tokens were billed as Opus. One real session came out **9.6% high**.
+- **Current price sheet.** The table includes Opus 5.5 (cache reads at 0.05×), Fable/Mythos 5.1 (cache reads at 0.025×), Opus 5, and Sonnet 5 at $2/$10.
+- **Range edges.** "Last 7 days" really is 7 days, and days are bucketed in local time. The old UTC bucketing was **$85 off** on one real 7-day window. A **UTC/local toggle** lines the numbers up with Claude's own usage page, which reports in UTC.
+- **Streaming and incremental scans.** A scan that runs while a response is still streaming no longer freezes its partial token count.
 
-**Not captured:**
-- **Cowork sessions** — these run server-side and do not write local JSONL transcripts
+Views added since the fork (a few started as upstream PRs that were never merged there):
+
+- **Cost by MCP server** and **top tools by cost**
+- **Expensive session signals**, which flag the sessions that ran up the bill
+- **Subagent dispatches**, named even when launched in the background
+- **History that outlives your transcripts.** Claude Code prunes old JSONL files, but the database only grows. Neither a scan nor the Rescan button deletes a row.
+- **Cost by project & branch**. Git worktrees fold into their parent repo.
+- **Session drilldown**: a timeline, per-turn table and tool breakdown
+- An **editable pricing table** for negotiated rates or new models. Your edits are saved in the browser.
+- CSV export on every table, and opt-in auto-rescan every 30 seconds
+
+Released changes are listed in the [CHANGELOG](CHANGELOG.md), most with before and after numbers.
 
 ---
 
-## Requirements
+## What it reads
 
-- Python 3.8+
-- No third-party packages — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`)
+- **Claude Code CLI**, **IDE extensions**, the **desktop app's Code tab**, and dispatched sessions. All of them write to `~/.claude/projects/`.
+- **Xcode's Claude integration** (`~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects/`)
 
-> Anyone running Claude Code already has Python installed.
+It can't see anything that doesn't write local transcripts: claude.ai chat, Cowork, and cloud sessions.
 
-## Quick Start
+---
 
-No `pip install`, no virtual environment, no build step.
+## Install
 
-### macOS / Linux (Homebrew)
+Requires Python 3.8+. There are no third-party packages.
+
+### uv / pipx (any OS)
+```
+uv tool install git+https://github.com/ollo12-prog/claude-usage
+claude-usage dashboard
+```
+`pipx install git+https://github.com/ollo12-prog/claude-usage` also works.
+
+### Homebrew (macOS / Linux)
 ```
 brew tap ollo12-prog/claude-usage https://github.com/ollo12-prog/claude-usage
 brew install ollo12-prog/claude-usage/claude-usage
 claude-usage dashboard
 ```
+The formula installs the most recent tagged release, which can trail `main` (see [AGENTS.md](AGENTS.md#homebrew-formula-and-self-referential-sha) for why). Use `uv` or a clone to get the latest.
 
-> Homebrew has disabled installing a formula from an arbitrary raw URL, so tap the repo first (thanks @adrianlungu for the working incantation in [phuryn/claude-usage#46](https://github.com/phuryn/claude-usage/issues/46)).
-
-After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
-
-### Any OS (uv tool / pipx)
-```
-uv tool install git+https://github.com/ollo12-prog/claude-usage
-claude-usage dashboard
-```
-
-Installs the `claude-usage` command without a clone (works with [`pipx`](https://pipx.pypa.io/) too: `pipx install git+https://github.com/ollo12-prog/claude-usage`). The tool stays dependency-free — this only adds packaging metadata, no third-party runtime deps ([phuryn/claude-usage#144](https://github.com/phuryn/claude-usage/issues/144)).
-
-### macOS / Linux (clone)
+### From a clone
 ```
 git clone https://github.com/ollo12-prog/claude-usage
 cd claude-usage
-python3 cli.py dashboard
-```
-
-### Windows
-```
-git clone https://github.com/ollo12-prog/claude-usage
-cd claude-usage
-python cli.py dashboard
+python cli.py dashboard      # python3 on macOS/Linux
 ```
 
 ### Docker
@@ -80,93 +81,82 @@ git clone https://github.com/ollo12-prog/claude-usage
 cd claude-usage
 bash scripts/run-docker.sh
 ```
-
-Opens the dashboard at **http://localhost:9898**.
-
-The script builds the image, then runs the container with:
-- `~/.claude` mounted **read-only** — the container can read your transcripts but cannot modify them
-- A named Docker volume (`claude-usage-data`) for the SQLite database — persisted across restarts, isolated from your home directory
+This serves the dashboard on **http://localhost:9898**. `~/.claude` is mounted read-only, and the database lives in a named volume (`claude-usage-data`).
 
 ---
 
 ## Usage
 
-> On macOS/Linux, use `python3` instead of `python` in all commands below. If you installed via Homebrew, replace `python cli.py` with `claude-usage`.
+The examples use `claude-usage`. From a clone, run `python cli.py` instead.
 
 ```
-# Scan JSONL files and populate the database (~/.claude/usage.db)
-python cli.py scan
-
-# Show today's usage summary by model (in terminal)
-python cli.py today
-
-# Show the last 7 days (per-day breakdown + by-model totals)
-python cli.py week
-
-# Show all-time statistics (in terminal)
-python cli.py stats
-
-# Scan + open browser dashboard at http://localhost:8080
-python cli.py dashboard
-
-# Custom host and port
-python cli.py dashboard --host 0.0.0.0 --port 9000
-
-# Environment variables are also supported
-HOST=0.0.0.0 PORT=9000 python cli.py dashboard
-
-# Scan a custom projects directory
-python cli.py scan --projects-dir /path/to/transcripts
+claude-usage dashboard                  # scan, then serve http://localhost:8080
+claude-usage dashboard --host 0.0.0.0 --port 9000
+claude-usage scan                       # incremental scan into ~/.claude/usage.db
+claude-usage today                      # today's usage by model
+claude-usage week                       # last 7 days, per day and by model
+claude-usage stats                      # all-time totals, by model, top projects
+claude-usage scan --projects-dir PATH   # scan a custom transcripts directory
+claude-usage --version
 ```
 
-The scanner is incremental — it tracks each file's path and modification time, so re-running `scan` is fast and only processes new or changed files.
+| Env var | Default | Effect |
+|---|---|---|
+| `HOST` / `PORT` | `localhost` / `8080` | Dashboard bind address |
+| `CLAUDE_USAGE_DB` | `~/.claude/usage.db` | Database location |
 
-By default, the scanner checks both `~/.claude/projects/` and the Xcode Claude integration directory (`~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects/`), skipping any that don't exist. Use `--projects-dir` to scan a custom location instead.
+Scans are incremental. Each file's mtime and line count are tracked, so a re-scan only reads what's new. The dashboard's **Rescan** button runs the same incremental scan. Filters (models, range, UTC/local) are kept in the URL, so you can bookmark a view.
 
 ---
 
-## How it works
+## How costs are calculated
 
-Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each line is a JSON record; `assistant`-type records contain:
-- `message.usage.input_tokens` — raw prompt tokens
-- `message.usage.output_tokens` — generated tokens
-- `message.usage.cache_creation_input_tokens` — tokens written to prompt cache
-- `message.usage.cache_read_input_tokens` — tokens served from prompt cache
-- `message.model` — the model used (e.g. `claude-sonnet-4-6`)
+Each turn is priced at its own model's rate, and the results are summed. For each assistant response the scanner stores:
 
-`scanner.py` parses those files and stores the data in a SQLite database at `~/.claude/usage.db`.
+- `input_tokens`, `output_tokens`, `cache_read_input_tokens`
+- `cache_creation_input_tokens`, split by `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`
+- each `usage.iterations[]` entry of type `advisor_message`, stored as its own turn priced at `advisorModel`
 
-`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering and a date-range dropdown with bookmarkable URLs. A sticky section nav jumps between sections, and every chart/table can be collapsed (remembered across reloads). The bind address and port can be configured with the `--host` and `--port` flags, or the `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
+Claude Code writes several records per streamed response, so only the last record for each `message.id` counts.
 
----
+### Prices
 
-## Cost estimates
+These are Anthropic API list prices, checked against [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing) on 2026-09-24, in $/MTok. The source of truth is `PRICING` in [cli.py](cli.py), which is mirrored in the dashboard. You can override any rate in the dashboard's pricing editor.
 
-Costs are calculated using **Anthropic API pricing as of August 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
+| Model | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|---|---|---|---|---|---|
+| Fable 5.1 / Mythos 5.1 | 10.00 | 50.00 | 12.50 | 20.00 | **0.25** |
+| Fable 5 / Mythos 5 | 10.00 | 50.00 | 12.50 | 20.00 | 1.00 |
+| Opus 5.5 | 4.00 | 20.00 | 5.00 | 8.00 | **0.20** |
+| Opus 5, 4.8, 4.7, 4.6, 4.5 | 5.00 | 25.00 | 6.25 | 10.00 | 0.50 |
+| Sonnet 5 | 2.00 | 10.00 | 2.50 | 4.00 | 0.20 |
+| Sonnet 4.6, 4.5 | 3.00 | 15.00 | 3.75 | 6.00 | 0.30 |
+| Haiku 4.5 | 1.00 | 5.00 | 1.25 | 2.00 | 0.10 |
 
-**Only models whose name contains `fable`, `mythos`, `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
+Model IDs resolve by exact match first, then by prefix (so dated IDs work), then by family keyword. Anything that doesn't match, such as local models or other vendors, shows as `n/a` and costs $0, so it never gets billed at Claude rates by accident.
 
-| Model | Input | Output | Cache Write | Cache Read |
-|-------|-------|--------|------------|-----------|
-| claude-fable-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
-| claude-mythos-5 | $10.00/MTok | $50.00/MTok | $12.50/MTok | $1.00/MTok |
-| claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
-| claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
-| claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
-
-> **Note:** These are API prices. If you use Claude Code via a Max or Pro subscription, your actual cost structure is different (subscription-based, not per-token).
+**Limitations.** These figures are API-equivalent estimates. A Pro or Max subscription doesn't bill per token. Two price modifiers aren't applied yet: fast mode (2× on Opus) and the 1.1× US data-residency multiplier. Sessions that use either will show a lower cost than the real one.
 
 ---
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `scanner.py` | Parses JSONL transcripts, writes to `~/.claude/usage.db` |
-| `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
-| `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
-| `Formula/claude-usage.rb` | Homebrew formula — install with `brew tap ollo12-prog/claude-usage` then `brew install ollo12-prog/claude-usage/claude-usage` |
-| `Dockerfile` | Container image definition |
-| `scripts/run-docker.sh` | Build and run the dashboard in Docker with a read-only `~/.claude` mount |
+| Path | Purpose |
+|---|---|
+| `scanner.py` | Parses JSONL transcripts into SQLite |
+| `cli.py` | `scan` / `today` / `week` / `stats` / `dashboard`, and the pricing table |
+| `dashboard.py` | stdlib HTTP server plus the single-page dashboard (Chart.js from CDN) |
+| `tests/` | `python -m unittest discover -s tests` (CI runs Python 3.9, 3.11, 3.12) |
+| `pyproject.toml` | Packaging for `uv tool` / `pipx` (no runtime dependencies) |
+| `Formula/claude-usage.rb` | Homebrew formula |
+| `Dockerfile`, `scripts/run-docker.sh` | Container build and run |
+
+For contributors and coding agents, [AGENTS.md](AGENTS.md) covers the architecture, the invariants that matter, and the release flow.
+
+---
+
+## Credits
+
+Forked from [phuryn/claude-usage](https://github.com/phuryn/claude-usage) by Paweł Huryn ([The Product Compass](https://www.productcompass.pm)). Upstream contributors keep their commits and credit; see the CHANGELOG. If you're on a subscription and want to stop runaway sessions rather than just measure them, look at his companion project [burnstop](https://github.com/phuryn/burnstop).
+
+MIT licensed.
