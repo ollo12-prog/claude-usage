@@ -7,9 +7,9 @@ class ClaudeUsage < Formula
   # It therefore tracks one release behind by design. Bump it with
   # scripts/bump-formula.sh after each release tags; never hand-edit the three
   # pinned lines. See AGENTS.md "Homebrew formula and self-referential SHA".
-  url "https://github.com/ollo12-prog/claude-usage/archive/refs/tags/v1.6.0.tar.gz"
-  version "1.6.0"
-  sha256 "685971dee061b7c947c04fb5eef09642ee2bc0552c163e207a784e6b459e18d8"
+  url "https://github.com/ollo12-prog/claude-usage/archive/refs/tags/v1.7.0.tar.gz"
+  version "1.7.0"
+  sha256 "12de1f967bb3e4250e6ea85fd8549b066014e36c849b1cacf19a1ae774aa8976"
   license "MIT"
   head "https://github.com/ollo12-prog/claude-usage.git", branch: "main"
 
