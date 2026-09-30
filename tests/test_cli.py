@@ -79,7 +79,7 @@ class TestGetPricing(unittest.TestCase):
         """$2/$10 is Sonnet 5's standard price — the scheduled 2026-09-01 rise to
         $3/$15 was cancelled, so the rate must not be date-dependent. Dated model
         ids must resolve to it too, not fall through to Sonnet 4.6's $3/$15."""
-        for model in ("claude-sonnet-5", "claude-sonnet-5-20260401"):
+        for model in ("claude-sonnet-5", "claude-sonnet-5-20260401", "claude-sonnet-5-5"):
             p = get_pricing(model)
             self.assertEqual(p["input"], 2.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 10.00, f"{model} output price wrong")
