@@ -7,7 +7,7 @@ import os
 import sqlite3
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from scanner import VERSION, init_db, surcharge_sql, PRICE_MULT_SQL
@@ -107,6 +107,89 @@ def _session_model_breakdowns(conn):
             "x": _surcharge(r),
         })
     return out
+
+
+QUOTA_WINDOWS = ("five_hour", "seven_day")
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def quota_summary(conn, tz="local"):
+    """Plan-quota view from the measures table (cost-band session.measure sidecar).
+
+    Window percentages are account-wide, so ``latest`` is the newest reading across
+    all sessions. Burn walks every reading in one global time order per window and
+    credits each rise to the session owning the later reading; a drop, or a reading
+    taken after the previous one's resetsAt, is a window reset, burning the new
+    percentage from zero. Session burns therefore sum to the account's observed burn.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='measures'").fetchone():
+        return None  # DB not scanned since measures support landed
+    rows = conn.execute("""
+        SELECT m.session_id, m.ts, m.cost_usd, m.rate_limits, s.project_name
+        FROM measures m LEFT JOIN sessions s ON s.session_id = m.session_id
+        ORDER BY m.ts
+    """).fetchall()
+    if not rows:
+        return None
+
+    def windows(raw):
+        try:
+            limits = json.loads(raw or "[]")
+        except ValueError:
+            return {}
+        return {w["kind"]: w for w in (limits if isinstance(limits, list) else ())
+                if isinstance(w, dict) and w.get("kind") in QUOTA_WINDOWS and _is_num(w.get("percentUsed"))}
+
+    def utc(ts):
+        try:
+            d = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+    # Parse rather than string-compare: ISO strings of different precision
+    # ("...:00Z" vs "...:00.100Z") don't sort or compare correctly as text.
+    rows = sorted((r for r in rows if utc(r[1])), key=lambda r: utc(r[1]))
+
+    per_session = {}
+    prev = {}  # window kind -> (pct, resetsAt) of the previous reading carrying it
+    latest = {}
+    for sid, ts, cost, raw, project in rows:
+        s = per_session.setdefault(sid, {"session_id": sid[:8], "full_session_id": sid,
+                                         "project": project or "unknown", "first_ts": ts,
+                                         "five_hour": 0.0, "seven_day": 0.0, "readings": 0})
+        s["last_ts"], s["readings"] = ts, s["readings"] + 1
+        if cost is not None:
+            s["cost_usd"] = cost
+        for kind, w in windows(raw).items():
+            pct, resets = w["percentUsed"], w.get("resetsAt")
+            if kind in prev:
+                ppct, presets = prev[kind]
+                reset = pct < ppct or (presets is not None and utc(ts) >= presets)
+                s[kind] += pct if reset else pct - ppct
+            # ponytail: the very first reading has no baseline, so its burn is unknown (0);
+            # with overlapping sessions attribution is approximate, and a long gap between
+            # readings credits usage from unmeasured clients (claude.ai, other machines).
+            prev[kind] = (pct, utc(resets) if isinstance(resets, str) else None)
+            latest[kind] = {"pct": pct, "resets_at": resets, "ts": ts}
+
+    now = datetime.now(timezone.utc)
+    for w in latest.values():
+        r = utc(w["resets_at"]) if isinstance(w["resets_at"], str) else None
+        w["resets_at"] = w["resets_at"] if r else None
+        w["stale"] = bool(r and r <= now)
+        w["resets"] = display_dt(w["resets_at"], tz) if w["resets_at"] else ""
+        w["as_of"] = display_dt(w["ts"], tz)
+    sessions = sorted(per_session.values(), key=lambda s: s["last_ts"], reverse=True)
+    for s in sessions:
+        s["last"] = display_dt(s.pop("last_ts"), tz)
+        s["first"] = display_dt(s.pop("first_ts"), tz)
+        s["five_hour"], s["seven_day"] = round(s["five_hour"], 1), round(s["seven_day"], 1)
+        s.setdefault("cost_usd", None)
+    return {"latest": latest, "sessions": sessions}
 
 
 def get_dashboard_data(db_path=DB_PATH, tz="local"):
@@ -399,6 +482,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "status":         r["status"],
     } for r in top_dispatch_rows]
 
+    quota = quota_summary(conn, tz)
     conn.close()
 
     return {
@@ -410,6 +494,7 @@ def get_dashboard_data(db_path=DB_PATH, tz="local"):
         "sessions_all":    sessions_all,
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
+        "quota":           quota,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -849,6 +934,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="jump-panel">
       <button class="jump-link" data-target="sec-cost-model">Cost by Model</button>
       <button class="jump-link" data-target="sec-dispatches">Dispatches</button>
+      <button class="jump-link" data-target="sec-quota">Plan Quota</button>
       <button class="jump-link" data-target="sec-sessions">Sessions</button>
       <button class="jump-link" data-target="sec-cost-project">Cost by Project</button>
       <button class="jump-link" data-target="sec-cost-branch">Cost by Project &amp; Branch</button>
@@ -945,6 +1031,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <tbody id="dispatches-body"></tbody>
     </table>
     <div class="table-foot" id="dispatches-foot"></div>
+  </div>
+  <div class="table-card" id="sec-quota" data-card="quota" hidden>
+    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Plan Quota <span class="info-icon" tabindex="0" role="img" aria-label="About this table" title="From the cost-band mod's session.measure sidecar (~/.claude/usage-measure). Window percentages are account-wide; each rise is credited to the session whose reading saw it, so overlapping sessions and usage from other clients make per-session burn approximate."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div></div>
+    <div class="table-foot" id="quota-latest" style="justify-content:flex-start;text-align:left"></div>
+    <table>
+      <thead><tr><th>Session</th><th>Project</th><th>First</th><th>Last</th><th class="num">Readings</th><th class="num">5h burn</th><th class="num">7d burn</th><th class="num">/cost</th></tr></thead>
+      <tbody id="quota-body"></tbody>
+    </table>
   </div>
   <div class="table-card" id="sec-sessions" data-card="sessions">
     <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
@@ -1151,7 +1245,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = String(s);
-  return d.innerHTML;
+  // innerHTML leaves quotes alone; escape them too so esc() is safe inside attributes.
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -2110,6 +2205,7 @@ function applyFilter() {
   lastByProjectBranch = sortProjectBranch(byProjectBranch);
   lastByTool = byTool;
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
+  renderQuota(rawData.quota);
   renderModelCostTable(byModel);
   renderToolCostTable(lastByTool.slice(0, 15));
   renderToolCostTable(byMcp, 'mcp-cost-body');
@@ -2474,6 +2570,29 @@ function moreBranchRows()  { branchLimit   = nextTableLimit(branchLimit,   lastB
 function lessBranchRows()  { branchLimit   = TABLE_STEPS[0]; renderProjectBranchCostTable(lastByProjectBranch); scrollTableToTop('project-branch-cost-body'); }
 function moreDispatchRows(){ dispatchesLimit = nextTableLimit(dispatchesLimit, lastFilteredDispatches.length); renderTopDispatches(lastFilteredDispatches); }
 function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatches(lastFilteredDispatches);            scrollTableToTop('dispatches-body'); }
+
+function renderQuota(q) {
+  const card = document.getElementById('sec-quota');
+  card.hidden = !q;
+  if (!q) return;
+  const label = { five_hour: '5-hour', seven_day: '7-day' };
+  document.getElementById('quota-latest').innerHTML = Object.keys(label).filter(k => q.latest[k]).map(k => {
+    const w = q.latest[k];
+    const resets = w.resets ? (w.stale ? ` (reset ${esc(w.resets)}, stale)` : `, resets ${esc(w.resets)}`) : '';
+    return `<strong>${label[k]}: ${esc(w.pct)}%</strong> as of ${esc(w.as_of)}${resets}`;
+  }).join(' &middot; ');
+  const pct = v => v ? `${v}%` : '<span class="muted">0</span>';
+  document.getElementById('quota-body').innerHTML = q.sessions.slice(0, 20).map(s => `<tr>
+      <td class="muted" style="font-family:monospace"><button class="link-btn" data-session="${esc(s.full_session_id)}" onclick="openSessionDetail(this.dataset.session)">${esc(s.session_id)}&hellip;</button></td>
+      <td>${esc(s.project)}</td>
+      <td class="muted">${esc(s.first)}</td>
+      <td class="muted">${esc(s.last)}</td>
+      <td class="num">${s.readings}</td>
+      <td class="num">${pct(s.five_hour)}</td>
+      <td class="num">${pct(s.seven_day)}</td>
+      <td class="cost">${s.cost_usd == null ? 'n/a' : fmtCost(s.cost_usd)}</td>
+    </tr>`).join('');
+}
 
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
@@ -3387,7 +3506,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # existing rows. The DB is append-only and the only durable store
             # of history once Claude Code prunes old transcripts, so we must
             # never delete it here — scan() dedupes via the message_id index.
-            # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
+            # Pass DB_PATH / DEFAULT_PROJECTS_DIRS / MEASURE_DIR explicitly so tests that
             # patch the module globals are honored (scan's defaults are
             # frozen at def time and would otherwise target the real paths).
             import scanner
@@ -3395,6 +3514,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             result = scanner.scan(
                 db_path=db_path,
                 projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
+                measure_dir=scanner.MEASURE_DIR,
                 verbose=False,
             )
             body = json.dumps(result).encode("utf-8")

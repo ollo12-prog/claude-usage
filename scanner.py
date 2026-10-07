@@ -22,6 +22,10 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
+# One JSONL per session, written by the cost-band mod on every session.measure
+# event: {ts, sessionId, cwd, rateLimits, cost_usd, context_tokens, changed}.
+# The only source of plan-quota (rateLimits) data; transcripts never carry it.
+MEASURE_DIR = Path.home() / ".claude" / "usage-measure"
 
 # Synthetic message_id prefix for turns minted from `usage.iterations[]` entries
 # of type 'advisor_message' (see parse_jsonl_file). Doubles as the marker that
@@ -125,6 +129,20 @@ def init_db(conn):
             path    TEXT PRIMARY KEY,
             mtime   REAL,
             lines   INTEGER
+        );
+
+        -- cost-band mod's session.measure sidecar (see ingest_measures); same
+        -- shape as claude-profiler's measures table.
+        CREATE TABLE IF NOT EXISTS measures (
+            session_id      TEXT NOT NULL,
+            ts              TEXT NOT NULL,
+            cwd             TEXT,
+            cost_usd        REAL,
+            context_tokens  INTEGER,
+            five_hour_pct   REAL,
+            seven_day_pct   REAL,
+            rate_limits     TEXT,
+            PRIMARY KEY (session_id, ts)
         );
 
         CREATE TABLE IF NOT EXISTS agents (
@@ -1047,9 +1065,67 @@ def insert_turns(conn, turns):
     ])
 
 
-def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
+def _measure_pct(limits, kind):
+    for w in limits or ():
+        if isinstance(w, dict) and w.get("kind") == kind:
+            v = w.get("percentUsed")
+            return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return None
+
+
+def parse_measure_line(line):
+    """One sidecar line -> measures row tuple, or None when it is not a complete record."""
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(r, dict) or not isinstance(r.get("sessionId"), str) or not isinstance(r.get("ts"), str)             or not r["sessionId"] or not r["ts"]:
+        return None
+    limits = r.get("rateLimits")
+    if not isinstance(limits, list):  # malformed record must not abort the scan
+        limits = []
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return (r["sessionId"], r["ts"], r.get("cwd"), num(r.get("cost_usd")), num(r.get("context_tokens")),
+            _measure_pct(limits, "five_hour"), _measure_pct(limits, "seven_day"), json.dumps(limits))
+
+
+def ingest_measures(conn, measure_dir):
+    """Ingest every changed sidecar file under ``measure_dir``. Returns rows inserted.
+
+    The mod rewrites the whole file on every event (its fs API has no append), so a
+    changed file (by mtime, tracked in processed_files) is re-parsed in full and
+    INSERT OR IGNORE on (session_id, ts) makes that idempotent. A torn line is skipped
+    and picked up when the next event rewrites the file.
+    """
+    inserted = 0
+    for path in sorted(Path(measure_dir).glob("*.jsonl")):  # a missing dir globs empty
+        try:
+            mtime = path.stat().st_mtime
+            seen = conn.execute("SELECT mtime FROM processed_files WHERE path = ?",
+                                (str(path),)).fetchone()
+            if seen and seen[0] == mtime:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # locked mid-write on Windows: not recorded, so the next scan retries
+            continue
+        rows = [r for r in map(parse_measure_line, text.splitlines()) if r]
+        before = conn.total_changes
+        conn.executemany("INSERT OR IGNORE INTO measures VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        inserted += conn.total_changes - before
+        conn.execute("INSERT OR REPLACE INTO processed_files (path, mtime, lines) VALUES (?, ?, ?)",
+                     (str(path), mtime, len(rows)))
+    conn.commit()
+    return inserted
+
+
+def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True, measure_dir=None):
+    """Only the default scan (no dirs passed) reads MEASURE_DIR; a caller passing its
+    own dirs opts in with ``measure_dir=`` so tests never read the real sidecar."""
     conn = get_db(db_path)
     init_db(conn)
+    if measure_dir is None and not (projects_dir or projects_dirs):
+        measure_dir = MEASURE_DIR
+    measures_added = ingest_measures(conn, measure_dir) if measure_dir else 0
 
     if projects_dirs:
         dirs_to_scan = [Path(d) for d in projects_dirs]
@@ -1238,11 +1314,12 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         print(f"  Updated files: {updated_files}")
         print(f"  Skipped files: {skipped_files}")
         print(f"  Turns added:   {total_turns}")
+        print(f"  Measures added: {measures_added}")
         print(f"  Sessions seen: {len(total_sessions)}")
 
     conn.close()
     return {"new": new_files, "updated": updated_files, "skipped": skipped_files,
-            "turns": total_turns, "sessions": len(total_sessions)}
+            "turns": total_turns, "sessions": len(total_sessions), "measures": measures_added}
 
 
 if __name__ == "__main__":

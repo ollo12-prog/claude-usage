@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Scanner
+
+- Added ingestion of the cost-band mod's `session.measure` sidecar (`~/.claude/usage-measure/<sessionId>.jsonl`) into a new `measures` table, the only source of plan-quota data, since transcripts never record `rateLimits`. Each scan re-reads only files whose mtime changed, and `INSERT OR IGNORE` on `(session_id, ts)` makes repeat reads harmless. Only the default scan and the dashboard's rescan read the directory; a scan given explicit `--projects-dir` opts in with `measure_dir=`.
+
+### Dashboard
+
+- Added a **Plan Quota** card: the latest account-wide 5-hour and 7-day `percentUsed` with its reset time (flagged stale once the reset has passed), and quota burn per session. Burn walks all readings in time order and credits each rise to the session whose reading saw it, treating a drop or a passed `resetsAt` as a window reset. It is approximate when sessions overlap or other clients use the plan between readings.
+- Fixed the HTML escaper `esc()`, which left quotes unescaped, so a value placed inside an attribute (the session-id buttons in Recent Sessions and Top Dispatches) could break out and inject an event handler.
+
+### Project / docs
+
+- `scripts/falsify_measures.py` breaks each ingest and burn rule in a temp copy of the repo and checks that `tests/test_measures.py` fails for every one.
+
 ## v1.7.1 — 2026-09-25
 
 ### Cost accuracy
