@@ -232,6 +232,13 @@ class TestPricingConsistency(unittest.TestCase):
             self.assertEqual(p["input"], 1.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 5.00, f"{model} output price wrong")
 
+    def test_haiku_5_5_pricing(self):
+        # Non-prefix ids must hit the explicit guard, not the generic 4.5 fallback (10x over).
+        for model in ("claude-haiku-5-5", "us.anthropic.claude-haiku-5-5-v1:0"):
+            p = get_pricing(model)
+            self.assertEqual((p["input"], p["output"], p["cache_read"]), (0.10, 0.50, 0.01), model)
+        self.assertEqual(get_pricing("experimental-haiku")["input"], 1.00)
+
 
 class TestDashboardNoBrowser(unittest.TestCase):
     """The VS Code extension passes --no-browser; CLI users get a browser."""

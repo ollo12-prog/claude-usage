@@ -57,6 +57,9 @@ PRICING = {
     "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75, "cache_write_1h": 6.00},
+    # Haiku 5.5 (anthropic.com/claude-haiku-5-5, 2026-10-07): <=100K-prompt rates;
+    # the 5x >100K-prompt tier is not modeled. cache_write_1h derived (2x input).
+    "claude-haiku-5-5":  {"input": 0.10, "output":  0.50, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.20},
     "claude-haiku-4-7":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
     "claude-haiku-4-6":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
     "claude-haiku-4-5":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25, "cache_write_1h": 2.00},
@@ -84,6 +87,8 @@ def get_pricing(model):
         return PRICING["claude-opus-4-8"]
     if "sonnet" in m:
         return PRICING["claude-sonnet-4-6"]
+    if "haiku-5-5" in m:
+        return PRICING["claude-haiku-5-5"]
     if "haiku" in m:
         return PRICING["claude-haiku-4-5"]
     return None

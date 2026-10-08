@@ -34,15 +34,16 @@ from scanner import parse_jsonl_file
 MODEL = "claude-opus-5-5"
 
 
-def _record(mid, speed="standard", geo="global", advisor=False):
+def _record(mid, speed="standard", geo="global", advisor=False, model=MODEL, **usage_overrides):
     usage = {
         "input_tokens": 1_000, "output_tokens": 2_000,
         "cache_read_input_tokens": 100_000, "cache_creation_input_tokens": 10_000,
         "cache_creation": {"ephemeral_5m_input_tokens": 6_000, "ephemeral_1h_input_tokens": 4_000},
         "speed": speed, "inference_geo": geo,
     }
+    usage.update(usage_overrides)
     rec = {"type": "assistant", "sessionId": "sess-1", "timestamp": "2026-09-20T10:00:00Z",
-           "cwd": "/home/u/proj", "message": {"id": mid, "model": MODEL, "content": [], "usage": usage}}
+           "cwd": "/home/u/proj", "message": {"id": mid, "model": model, "content": [], "usage": usage}}
     if advisor:
         rec["advisorModel"] = "claude-fable-5-1"
         usage["iterations"] = [{"type": "message"},
@@ -50,9 +51,9 @@ def _record(mid, speed="standard", geo="global", advisor=False):
     return rec
 
 
-def _standard_cost():
+def _standard_cost(model=MODEL):
     """calc_cost of one _record's tokens at standard rates."""
-    return cli.calc_cost(MODEL, 1_000, 2_000, 100_000, 10_000, 4_000)
+    return cli.calc_cost(model, 1_000, 2_000, 100_000, 10_000, 4_000)
 
 
 class _ScannedDB(unittest.TestCase):
@@ -110,6 +111,46 @@ class TestCliCost(_ScannedDB):
 
     def test_falsify_standard_is_unchanged(self):
         self.assertAlmostEqual(self.cli_cost("message_id='std'"), _standard_cost(), places=6)
+
+
+class TestHaiku55LongPrompt(_ScannedDB):
+    """Haiku 5.5: 5x on every token class once input + cache_read + cache_creation
+    > 100K. _record's default prompt is 1,000 + 100,000 + 10,000 = 111,000."""
+    H55, H45 = "claude-haiku-5-5", "claude-haiku-4-5"
+    records = [_record("long", model=H55),
+               _record("edge", model=H55, input_tokens=0, cache_creation_input_tokens=0,
+                       cache_creation={}),  # exactly 100,000: not over
+               _record("old", model=H45),
+               # each prompt term alone tips it to 100,001
+               _record("tip_in", model=H55, input_tokens=1, cache_creation_input_tokens=0,
+                       cache_creation={}),
+               _record("tip_cc", model=H55, input_tokens=0, cache_read_input_tokens=90_001,
+                       cache_creation={"ephemeral_5m_input_tokens": 10_000,
+                                       "ephemeral_1h_input_tokens": 0})]
+
+    def test_long_prompt_is_5x(self):
+        self.assertAlmostEqual(self.cli_cost("message_id='long'"), _standard_cost(self.H55) * 5, places=6)
+
+    def test_every_prompt_term_counts(self):
+        self.assertAlmostEqual(self.cli_cost("message_id='tip_in'"),
+                               cli.calc_cost(self.H55, 1, 2_000, 100_000, 0, 0) * 5, places=6)
+        self.assertAlmostEqual(self.cli_cost("message_id='tip_cc'"),
+                               cli.calc_cost(self.H55, 0, 2_000, 90_001, 10_000, 0) * 5, places=6)
+
+    def test_falsify_exactly_100k_is_1x(self):
+        self.assertAlmostEqual(self.cli_cost("message_id='edge'"),
+                               cli.calc_cost(self.H55, 0, 2_000, 100_000, 0, 0), places=6)
+
+    def test_falsify_haiku_4_5_has_no_long_tier(self):
+        self.assertAlmostEqual(self.cli_cost("message_id='old'"), _standard_cost(self.H45), places=6)
+
+    def test_dashboard_turn_carries_surcharge(self):
+        turns = dashboard.get_session_detail("sess-1", db_path=self.db)["turns"]
+        x = {t["model"] + str(t["input"]): t["x"] for t in turns
+             if t["cache_read"] == 100_000 and t["input"] != 1}
+        self.assertAlmostEqual(x["claude-haiku-5-51000"]["output"], 2_000 * 4, places=6)
+        self.assertIsNone(x["claude-haiku-5-50"])
+        self.assertIsNone(x["claude-haiku-4-51000"])
 
 
 class TestDashboardRows(_ScannedDB):

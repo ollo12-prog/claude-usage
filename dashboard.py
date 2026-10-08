@@ -1228,7 +1228,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of September 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates use editable dashboard pricing defaults based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of October 2026. Custom price edits are saved in this browser only. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/ollo12-prog/claude-usage" target="_blank">https://github.com/ollo12-prog/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -1375,6 +1375,7 @@ const DEFAULT_PRICING = {
   'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30, cache_write_1h: 6.00 },
+  'claude-haiku-5-5':  { input:  0.10, output:  0.50, cache_write: 0.125, cache_read: 0.01, cache_write_1h: 0.20 },
   'claude-haiku-4-7':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10, cache_write_1h: 2.00 },
@@ -1474,6 +1475,7 @@ function getPricing(model) {
   if (m.includes('opus-5-5')) return PRICING['claude-opus-5-5'];
   if (m.includes('opus-'))  return PRICING['claude-opus-4-8']; // 'opus-': a local '...-opus' build is not billed
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
+  if (m.includes('haiku-5-5')) return PRICING['claude-haiku-5-5'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
   return null;
 }

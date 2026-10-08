@@ -40,8 +40,16 @@ ADVISOR_ID_PREFIX = "advisor:"
 # 2026-09-24). Kept as SQL so every aggregate can price it; `{t}` is an optional
 # table-alias prefix. Cost is linear in tokens, so the surcharge is carried as
 # extra tokens, SUM(tokens * (mult - 1)), priced at the row's normal rates.
+# Haiku 5.5 bills every rate 5x once a request's prompt exceeds 100K tokens
+# (anthropic.com/claude-haiku-5-5, 2026-10-07). "Prompt" is undefined there; we
+# assume the Sonnet 4.5 long-context rule: input + cache_read + cache_creation,
+# whole request (output too) at the higher rate. Unconfirmed until the platform
+# pricing page defines it. SQLite LIKE is case-insensitive for ASCII.
 PRICE_MULT_SQL = ("(CASE WHEN {t}speed = 'fast' THEN 2.0 ELSE 1.0 END"
-                  " * CASE WHEN {t}inference_geo = 'us' THEN 1.1 ELSE 1.0 END)")
+                  " * CASE WHEN {t}inference_geo = 'us' THEN 1.1 ELSE 1.0 END"
+                  " * CASE WHEN {t}model LIKE '%haiku-5-5%' AND {t}input_tokens"
+                  " + {t}cache_read_tokens + {t}cache_creation_tokens > 100000"
+                  " THEN 5.0 ELSE 1.0 END)")
 _SURCHARGE_COLS = (("input_tokens", "x_inp"), ("output_tokens", "x_out"),
                    ("cache_read_tokens", "x_cr"), ("cache_creation_tokens", "x_cc"),
                    ("cache_creation_1h_tokens", "x_cc1h"))
